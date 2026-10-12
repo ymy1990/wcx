@@ -312,12 +312,28 @@ public final class WeChatDatabaseApi {
         }
         Object storage = getCoreStorage();
         if (storage == null) return false;
+
+        // 策略 A：从 CoreStorage 递归寻找携带查询方法的 SqliteDB wrapper。
         Object wrapper = findDbWrapper(storage);
+        Method method = wrapper != null ? findQueryMethod(wrapper.getClass()) : null;
+
+        // 策略 B（WCX 侧已验证可用的取库路径）：按字段类型定位 SqliteDB wrapper，
+        // 再调用其返回 com.tencent.wcdb.database.SQLiteDatabase 的方法，取得真正可查询的数据库对象。
+        if (wrapper == null || method == null) {
+            Object wcdb = resolveWcdbDatabase(storage);
+            if (wcdb != null) {
+                Method wcdbQuery = findQueryMethod(wcdb.getClass());
+                if (wcdbQuery != null) {
+                    wrapper = wcdb;
+                    method = wcdbQuery;
+                }
+            }
+        }
+
         if (wrapper == null) {
-            log("未找到 SqliteDB wrapper");
+            log("未找到 SqliteDB wrapper（CoreStorage=" + storage.getClass().getName() + "）");
             return false;
         }
-        Method method = findQueryMethod(wrapper.getClass());
         if (method == null) {
             log("未找到 SqliteDB 查询方法: " + wrapper.getClass().getName());
             return false;
@@ -327,6 +343,65 @@ public final class WeChatDatabaseApi {
         log("数据库API已就绪: wrapper=" + wrapper.getClass().getName()
                 + " query=" + method.getName());
         return true;
+    }
+
+    /** 策略 B：按字段类型定位 SqliteDB wrapper，并取其底层 WCDB SQLiteDatabase。 */
+    private Object resolveWcdbDatabase(Object storage) {
+        try {
+            Object wrapper = findFieldByType(storage, dexFinder.sqliteDbWrapperClass);
+            if (wrapper == null) return null;
+            Object db = invokeNoArgReturning(wrapper, "com.tencent.wcdb.database.SQLiteDatabase");
+            if (db == null) {
+                db = invokeNoArgReturning(wrapper, "android.database.sqlite.SQLiteDatabase");
+            }
+            if (db != null) {
+                log("WCDB 取库成功: wrapper=" + wrapper.getClass().getName()
+                        + " db=" + db.getClass().getName());
+            }
+            return db;
+        } catch (Throwable e) {
+            log("WCDB 取库失败: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** 在对象自身的字段（含父类）中，按声明类型匹配 wrapper 类或其首个接口。 */
+    private Object findFieldByType(Object source, Class<?> wrapperClass) {
+        Class<?> iface = wrapperClass.getInterfaces().length > 0
+                ? wrapperClass.getInterfaces()[0] : null;
+        Class<?> cur = source.getClass();
+        while (cur != null && cur != Object.class) {
+            for (Field field : KavaReflector.declaredFields(cur)) {
+                try {
+                    if (KavaReflector.isStatic(field)) continue;
+                    Class<?> type = field.getType();
+                    if (type != wrapperClass && (iface == null || type != iface)) continue;
+                    Object value = KavaReflector.readField(field, source);
+                    if (value != null) return value;
+                } catch (Throwable ignored) {}
+            }
+            cur = cur.getSuperclass();
+        }
+        return null;
+    }
+
+    /** 调用对象的无参且返回类型为 returnClassName 的方法。 */
+    private Object invokeNoArgReturning(Object target, String returnClassName) {
+        Class<?> cur = target.getClass();
+        while (cur != null && cur != Object.class) {
+            for (Method method : KavaReflector.declaredMethods(cur)) {
+                try {
+                    if (KavaReflector.isStatic(method)) continue;
+                    if (method.getParameterTypes().length != 0) continue;
+                    if (!returnClassName.equals(method.getReturnType().getName())) continue;
+                    KavaReflector.accessible(method);
+                    Object result = method.invoke(target);
+                    if (result != null) return result;
+                } catch (Throwable ignored) {}
+            }
+            cur = cur.getSuperclass();
+        }
+        return null;
     }
 
     private Cursor rawQueryInternal(String sql, String[] args, boolean logError) {
@@ -582,33 +657,65 @@ public final class WeChatDatabaseApi {
         return null;
     }
 
+    /** 搜索上限，避免对象图异常庞大时长时间遍历。 */
+    private static final int WRAPPER_SEARCH_LIMIT = 200_000;
+
     private Object findDbWrapper(Object storage) {
         if (storage == null || dexFinder.sqliteDbWrapperClass == null) return null;
+        Class<?> target = dexFinder.sqliteDbWrapperClass;
         Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
         ArrayDeque<Object> queue = new ArrayDeque<>();
         queue.add(storage);
+        int scanned = 0;
         while (!queue.isEmpty()) {
             Object current = queue.removeFirst();
             if (current == null || visited.contains(current)) continue;
             visited.add(current);
+            scanned++;
+            if (scanned > WRAPPER_SEARCH_LIMIT) break;
 
-            if (dexFinder.sqliteDbWrapperClass.isInstance(current)) {
+            if (target.isInstance(current)) {
+                log("数据库 wrapper 命中: " + current.getClass().getName() + "（扫描 " + scanned + " 个对象）");
                 return current;
             }
 
             Method method = findQueryMethod(current.getClass());
             if (method != null) {
+                log("数据库 wrapper 按查询方法命中: " + current.getClass().getName() + "（扫描 " + scanned + " 个对象）");
                 return current;
             }
 
             enqueueNestedObjects(current, queue, visited);
         }
+        // 定位失败时输出足够信息以便定位（所在 storage 类型、目标类、扫描规模）。
+        log("BFS 未命中 SqliteDB wrapper：storage=" + storage.getClass().getName()
+                + " target=" + target.getName() + "，已扫描 " + scanned + " 个对象");
         return null;
     }
 
     private void enqueueNestedObjects(Object source,
                                       ArrayDeque<Object> queue,
                                       Set<Object> visited) {
+        // Map / 集合 / 数组：部分微信版本会把数据库/storage 对象缓存于其中，必须展开。
+        try {
+            if (source instanceof Map) {
+                for (Object value : ((Map<?, ?>) source).values()) {
+                    if (value != null && !visited.contains(value)) queue.addLast(value);
+                }
+            } else if (source instanceof Iterable) {
+                for (Object value : (Iterable<?>) source) {
+                    if (value != null && !visited.contains(value)) queue.addLast(value);
+                }
+            } else if (source.getClass().isArray()) {
+                int length = java.lang.reflect.Array.getLength(source);
+                for (int i = 0; i < length; i++) {
+                    Object value = java.lang.reflect.Array.get(source, i);
+                    if (value != null && !visited.contains(value)) queue.addLast(value);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
         Class<?> cur = source.getClass();
         while (cur != null && cur != Object.class) {
             for (Field field : KavaReflector.declaredFields(cur)) {

@@ -30,6 +30,7 @@ import com.Johnny.wcx.utils.HostInfo
 import com.Johnny.wcx.utils.TargetProcesses
 import com.Johnny.wcx.utils.android.showToast
 import h.Hchat.hooks.api.core.WeChatApis
+import h.Hchat.hooks.api.runtime.WeChatDatabaseApi
 import h.Hchat.hooks.items.script.ScriptPluginRuntime
 import h.Hchat.hooks.items.script.ScriptPluginSettings
 import h.Hchat.preferences.HchatStorage
@@ -37,6 +38,7 @@ import h.Hchat.ui.miuix.ActionRow
 import h.Hchat.ui.miuix.InsetDivider
 import h.Hchat.ui.miuix.PageScaffold
 import h.Hchat.ui.miuix.PluginMarketUi
+import h.Hchat.ui.miuix.MarketServerSettingCard
 import h.Hchat.ui.miuix.ScriptPluginManagerTabPage
 import h.Hchat.ui.miuix.SettingsCard
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
@@ -113,6 +115,8 @@ fun ScriptDiagnosticsScreen(onBack: () -> Unit) {
                     }
                 }
             }
+            item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "市场服务器") }
+            item { MarketServerSettingCard(context) }
             item { SmallTitle(modifier = Modifier.padding(top = 10.dp), text = "操作") }
             item {
                 SettingsCard {
@@ -196,13 +200,21 @@ private fun collectScriptDiagnostics(context: Context): List<Pair<String, String
     // —— 引导链路 ——
     val bootstrapStatus = runCatching { HchatScriptBootstrap.status }.getOrDefault("未知")
     rows += "引导链路" to bootstrapStatus
-    rows += "未就绪原因" to when {
-        bootstrapStatus.startsWith("引导异常") -> bootstrapStatus
-        database == null -> "微信数据库 API 未解析（DexKit 预热未完成或解析失败）"
-        contacts == null -> "微信联系人 API 未解析（DexKit 预热未完成或解析失败）"
-        account == null -> "微信账号 API 未解析（DexKit 预热未完成或解析失败）"
-        else -> "无（已就绪）"
-    }
+    // 与「插件总开关」使用完全相同的就绪判定，避免诊断页与开关结论不一致。
+    val realReadiness = runCatching { ScriptPluginRuntime.scriptApiReadinessDetail() }.getOrNull()
+    rows += "未就绪原因" to (realReadiness ?: "无（已就绪）")
+
+    // —— 数据库对象深入状态（开关真正的卡点）——
+    val dbApi = database as? WeChatDatabaseApi
+    rows += "数据库API可用" to runCatching {
+        if (dbApi?.isAvailable() == true) "是（已定位 CoreStorage/SqliteDB 类）"
+        else "✗ 否（未解析出 CoreStorage 或 SqliteDB 类）"
+    }.getOrDefault("未知")
+    rows += "数据库对象就绪" to runCatching {
+        if (dbApi?.isReady() == true) "是（已取得 SqliteDB 对象）"
+        else "✗ 否（CoreStorage 里找不到 SqliteDB 对象）"
+    }.getOrDefault("未知")
+    rows += "DexKit 解析" to runCatching { HchatScriptBootstrap.dexParseInfo() }.getOrDefault("未知")
     rows += "脚本 Hook 注册数" to runCatching { "${HookRegistry.get().size()} 个" }
         .getOrDefault("读取失败")
 
@@ -219,8 +231,6 @@ private fun collectScriptDiagnostics(context: Context): List<Pair<String, String
     rows += "脚本目录" to runCatching { ScriptPluginRuntime.scriptDir(context).absolutePath }
         .getOrDefault("未知")
     rows += "日志目录" to runCatching { KnownPaths.moduleData.resolve("logs").toString() }
-        .getOrDefault("未知")
-    rows += "市场服务器" to runCatching { PluginMarketSettings.serviceUrl(context) }
         .getOrDefault("未知")
     return rows
 }

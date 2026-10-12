@@ -52,6 +52,18 @@ object HchatScriptBootstrap {
     @Volatile
     private var dexKitBridgeRef: DexKitBridge? = null
 
+    /** 持有本次引导创建的 DexFinder，供诊断页读取解析产物。 */
+    @Volatile
+    private var dexFinderRef: DexFinder? = null
+
+    /** 诊断页用：DexFinder 关键解析结果（CoreStorage getter / SqliteDB 类 / MMKernel 类）。 */
+    fun dexParseInfo(): String {
+        val dex = dexFinderRef ?: return "未初始化"
+        return "coreStorage=" + (dex.coreStorageGetter?.name ?: "null") +
+            " / sqliteDb=" + (dex.sqliteDbWrapperClass?.name ?: "null") +
+            " / mmKernel=" + (dex.mmKernelClass?.name ?: "null")
+    }
+
     /** 诊断页用：重置引导状态并重新安装。 */
     @Synchronized
     fun retry() {
@@ -75,6 +87,7 @@ object HchatScriptBootstrap {
             status = "DexKitBridge 已创建"
 
             val dexFinder = DexFinder(dexKitBridge, hostClassLoader, hostContext)
+            dexFinderRef = dexFinder
             val dexBridgeHolder = DexBridgeHolder(
                 dexKitBridge,
                 dexFinder,
