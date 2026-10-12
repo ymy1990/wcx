@@ -5,6 +5,8 @@
 更新来源：https://github.com/ymy1990/wcx.git 的 master
 origin 仍是 Johnny520 的原仓库；脚本明确使用你的 fork URL，不依赖 origin。
 
+密友入口沿用源项目的“功能 → 密友功能”；不再移动到主题设置或重排分组。
+
 平时使用：
 1. 先让你的 GitHub fork 更新到想使用的 WCX 版本。
 2. 双击 D:/projects/VX/output/更新密友版.cmd。
@@ -28,7 +30,7 @@ PowerShell 用法（在工作副本中）：
 源项目保留自己的版本号；wcxlcVersionCode/wcxlcVersionName Gradle 属性仅用于本地构建。
 本地版本号会递增，版本名跟随基础版本，例如 v285-wcxlc-local。
 脚本沿用此前的本地签名文件，签名密钥不会加入 Git 提交或备份 bundle。
-编译成功、生成注册表至少含 37 项及两个独立恢复控制、APK 元数据与签名验证通过后才交付 APK。
+编译成功、生成注册表至少含 36 项及两个独立恢复控制、APK 元数据与签名验证通过后才交付 APK。
 如果未来源码、构建工具或微信接口变动，可能需要手动调整和实机验证；Git 合并成功不代表所有场景自动兼容。
 
 恢复本地 Git 分支：

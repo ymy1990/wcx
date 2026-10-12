@@ -15,21 +15,9 @@ import kotlin.math.abs
 object SecretFriendTitleGesture {
     private val main = Handler(Looper.getMainLooper())
     private var activeActivity = WeakReference<Activity>(null)
-    private var legacyEnabled: (() -> Boolean)? = null
-    private var legacyTrigger: ((Context) -> Unit)? = null
     private var secretTaps = 0
-    private var legacyTaps = 0
     private var secretLastTap = 0L
-    private var legacyLastTap = 0L
     private var longTask: Runnable? = null
-
-    fun registerLegacy(enabled: () -> Boolean, trigger: (Context) -> Unit) {
-        legacyEnabled = enabled
-        legacyTrigger = trigger
-        refresh()
-    }
-
-    fun unregisterLegacy() { legacyEnabled = null; legacyTrigger = null; refresh() }
 
     fun refresh() {
         main.post {
@@ -40,7 +28,6 @@ object SecretFriendTitleGesture {
             } else {
                 cancelLongPress()
                 secretTaps = 0
-                legacyTaps = 0
                 TitleGestureRecovery.stop()
             }
         }
@@ -48,7 +35,7 @@ object SecretFriendTitleGesture {
 
     private fun secretClickEnabled() = MultiClickTitleUnlock.isEnabled && !SecretFriendState.isEmpty()
     private fun secretLongEnabled() = LongPressTitleUnlock.isEnabled && !SecretFriendState.isEmpty()
-    private fun hasSources() = secretClickEnabled() || secretLongEnabled() || legacyEnabled?.invoke() == true
+    private fun hasSources() = secretClickEnabled() || secretLongEnabled()
 
     fun watch(activity: Activity) {
         activeActivity = WeakReference(activity)
@@ -89,7 +76,7 @@ object SecretFriendTitleGesture {
                     if (secretLongEnabled()) {
                         val task = Runnable {
                             if (!cancelled && secretLongEnabled()) {
-                                longFired = true; secretTaps = 0; legacyTaps = 0
+                                longFired = true; secretTaps = 0
                                 toggle(view.context)
                             }
                         }
@@ -99,7 +86,7 @@ object SecretFriendTitleGesture {
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (abs(event.x - downX) > slop || abs(event.y - downY) > slop) {
-                        cancelled = true; cancelLongPress(); secretTaps = 0; legacyTaps = 0
+                        cancelled = true; cancelLongPress(); secretTaps = 0
                     }
                 }
                 MotionEvent.ACTION_UP -> {
@@ -113,14 +100,9 @@ object SecretFriendTitleGesture {
                                 secretTaps = 0; toggle(view.context)
                             }
                         }
-                        if (legacyEnabled?.invoke() == true) {
-                            legacyTaps = if (now - legacyLastTap > 500) 1 else legacyTaps + 1
-                            legacyLastTap = now
-                            if (legacyTaps >= 3) { legacyTaps = 0; legacyTrigger?.invoke(view.context) }
-                        }
                     }
                 }
-                MotionEvent.ACTION_CANCEL -> { cancelled = true; cancelLongPress(); secretTaps = 0; legacyTaps = 0 }
+                MotionEvent.ACTION_CANCEL -> { cancelled = true; cancelLongPress(); secretTaps = 0 }
             }
             true
         }

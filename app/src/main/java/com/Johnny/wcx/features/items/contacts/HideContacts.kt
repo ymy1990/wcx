@@ -3,7 +3,6 @@ package com.Johnny.wcx.features.items.contacts
 import com.Johnny.wcx.R
 import com.Johnny.wcx.features.items.secret_friend.SecretFriendTitleGesture
 import com.Johnny.wcx.features.items.secret_friend.SecretFriendState
-import com.Johnny.wcx.features.items.secret_friend.MultiClickTitleUnlock
 import com.Johnny.wcx.features.items.secret_friend.AutoRejectVoip
 
 import android.app.Activity
@@ -78,8 +77,8 @@ import java.lang.reflect.Modifier as JavaModifier
 
 @Feature(
     name = "隐藏联系人",
-    categories = ["密友功能"],
-    description = "与密友名单共用，提供拍一拍、角标计数及其他列表隐藏；通话拒接与定时规则使用下方独立开关"
+    categories = ["联系人与群组"],
+    description = "与密友名单共用，提供拍一拍、角标计数及其他列表隐藏；通话拒接与定时规则在密友功能内独立设置"
 )
 object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputBarListener,
     WeDatabaseListenerApi.IQueryListener {
@@ -94,14 +93,12 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
     private const val KEY_LEGACY_MIGRATED = "hidden_parentref_migrated"
 
     var hiddenContacts: Set<String>
-        get() = SecretFriendState.getStoredWxIds()
+        get() = SecretFriendState.getWxIds()
         set(value) {
             val added = value - SecretFriendState.getStoredWxIds()
             SecretFriendState.setWxIds(value)
             for (id in added) WeConversationApi.setDnd(id, true)
         }
-
-    override val defaultEnabled: Boolean = true
 
     private object ScreenOffReceiver : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent?) {
@@ -200,10 +197,6 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
     }
 
     override fun onEnable() {
-        SecretFriendTitleGesture.registerLegacy(
-            enabled = { isEnabled && tripleClickTitle && !MultiClickTitleUnlock.isEnabled },
-            trigger = { toggleTemporarilyShown(it) },
-        )
         // --- home screen conversation list ---
 
         // Hide at query time: inject `username NOT IN (...)` into WeChat's list queries so hidden
@@ -315,8 +308,6 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
     }
 
     override fun onDisable() {
-        SecretFriendTitleGesture.unregisterLegacy()
-
         unregisterScreenOffReceiver()
         ShakeDetector.stop()
         chattingUi?.clear()

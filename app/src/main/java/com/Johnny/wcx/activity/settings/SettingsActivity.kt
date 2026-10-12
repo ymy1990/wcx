@@ -166,6 +166,7 @@ val FEATURE_CATEGORIES = listOf(
     "批量操作" to MaterialSymbols.Outlined.Checklist,
     "首页右上角菜单" to MaterialSymbols.Outlined.Add_circle,
     "联系人详情页面" to MaterialSymbols.Outlined.Contact_page,
+    "密友功能" to MaterialSymbols.Outlined.Contacts,
 )
 
 // ---------------------------------------------------------------------------
@@ -259,7 +260,7 @@ private fun MainPagerScreen(
                         onOpenDiagnostics = onOpenScriptDiagnostics,
                     )
                     3 -> LogsPager()
-                    else -> SettingsPager(onOpenLicense = onOpenLicense, onOpenAcknowledgements = onOpenAcknowledgements, onOpenCategory = onOpenCategory)
+                    else -> SettingsPager(onOpenLicense = onOpenLicense, onOpenAcknowledgements = onOpenAcknowledgements)
                 }
             }
         }

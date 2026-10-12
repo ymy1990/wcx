@@ -107,7 +107,7 @@ try {
     $registryPath = Join-Path $repo 'app/build/generated/ksp/standardDebug/kotlin/com/Johnny/wcx/features/core/FeaturesProvider.kt'
     $registry = Get-Content -LiteralPath $registryPath -Raw
     $controls = [regex]::Matches($registry, '\w+\.apply \{ name = "[^"]+"; categories = listOf\("密友功能"\)')
-    if ($controls.Count -lt 37 -or $registry -notmatch 'AutoRestoreOnAppLeave\.apply' -or $registry -notmatch 'AutoRestoreOnLeave\.apply') {
+    if ($controls.Count -lt 36 -or $registry -notmatch 'AutoRestoreOnAppLeave\.apply' -or $registry -notmatch 'AutoRestoreOnLeave\.apply') {
         throw 'The generated feature registry is missing expected secret-friend controls.'
     }
     $apk = Join-Path $apkDirectory $entry[0].outputFile

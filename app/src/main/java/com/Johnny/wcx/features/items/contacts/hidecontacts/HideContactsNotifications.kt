@@ -132,14 +132,14 @@ object HideContactsNotifications : ApiFeature(), IResolveDex {
      *
      * Everything is read from [WePrefs] (MMKV in `MULTI_PROCESS_MODE`) rather than from
      * [HideContacts]'s runtime state, because none of that state exists in `:push`:
-     * - `SwitchFeature` persists its on/off state under the feature's `technicalId`, so the 隐藏联系人 switch
+     * - `SwitchFeature` persists its on/off state under the feature's `name`, so the 隐藏联系人 switch
      *   is readable here;
      * - `HideContacts.hiddenContacts` is itself nothing but a [WePrefs] string-set read.
      *
      * `HideContacts.temporarilyShown` is intentionally *not* consulted — see the class KDoc.
      */
     private fun isSuppressed(wxId: String): Boolean =
-        WePrefs.getBoolOrDef(HideContacts.technicalId, false) && wxId in HideContacts.hiddenContacts
+        WePrefs.getBoolOrDef(HideContacts.name, false) && wxId in HideContacts.hiddenContacts
 
     override fun onEnable() {
         // Both bodies only cancel the call; they mutate no WeChat state and so cannot re-trigger the
