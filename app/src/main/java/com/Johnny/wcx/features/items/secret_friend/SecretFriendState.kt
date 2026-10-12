@@ -1,6 +1,9 @@
 package com.Johnny.wcx.features.items.secret_friend
 
 import android.content.Context
+import android.content.SharedPreferences
+import com.Johnny.wcx.constants.Preferences
+import com.Johnny.wcx.utils.HostInfo
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -120,7 +123,8 @@ object SecretFriendState {
         !wxId.isNullOrEmpty() && getMaskItems().any { it.maskId == wxId }
 
     /** 名单主控开关是否开启（pref 缺省开启，保持从未操作过开关的旧行为）。 */
-    fun isSecretFriendMasterOn(): Boolean = WePrefs.getBoolOrDef(MASTER_ENABLED_PREF, true)
+    fun isSecretFriendMasterOn(): Boolean =
+        Preferences.secretFriendMasterEnabled && WePrefs.getBoolOrDef(MASTER_ENABLED_PREF, true)
 
     /** 主控开关的 pref 键（与「密友名单管理」功能开关一致）。 */
     private const val MASTER_ENABLED_PREF = "密友名单管理"
@@ -193,6 +197,13 @@ object SecretFriendState {
         }
     }
 
+    @JvmStatic
+    fun reminderPrefs(): SharedPreferences = WePrefs.default
+
+    fun isEnabledForGesture(): Boolean = getStoredWxIds().isNotEmpty()
+
+    fun clearTemporarilyShown() { WePrefs.putLong(KEY_TEMP_UNTIL, 0L) }
+
     // ─────────────────────── 临时解除状态 ───────────────────────
 
     /** 是否处于临时显示态（所有隐藏类 hook 过滤前先查这里）。 */
@@ -205,14 +216,16 @@ object SecretFriendState {
      * 触发主页会话列表刷新，使 SQL 过滤立即放行密友行。
      */
     fun tempShowForMinutes(context: Context? = null, minutes: Int = tempShowMinutes.coerceIn(1, 1440)) {
-        val until = System.currentTimeMillis() + minutes * 60_000L
+        tempShowUntil(System.currentTimeMillis() + minutes * 60_000L, context)
+    }
+
+    /** A schedule's SHOW persists until its next HIDE or a manual restore. */
+    fun tempShowUntil(until: Long, context: Context? = null) {
         WePrefs.putLong(KEY_TEMP_UNTIL, until)
-        WeLogger.i(TAG, "temporarily showing secret friends for $minutes min")
         showToastIfEnabled(context, toastTempShown)
-        // 此前为隐藏而删除的会话行在此重建，否则临时解除后列表无行可显
         HideConversations.restoreHiddenRows()
         WeConversationApi.reloadConversations()
-        scheduleTempExpiry(until)
+        if (until != Long.MAX_VALUE) scheduleTempExpiry(until)
     }
 
     /**
@@ -235,13 +248,12 @@ object SecretFriendState {
 
     /** 立即恢复隐藏（锁屏 / 离开对话 / 离开微信 / 指令 / 到期）。 */
     fun tempOff(context: Context? = null) {
-        if (!isTemporarilyShown()) return
+        // A non-zero expired deadline is also a transition. Zero still refreshes hiding silently.
+        val previous = WePrefs.getLongOrDef(KEY_TEMP_UNTIL, 0L)
         WePrefs.putLong(KEY_TEMP_UNTIL, 0L)
-        WeLogger.i(TAG, "temporarily-show state cleared")
-        showToastIfEnabled(context, toastTempOff)
-        // 临时展示期间新产生的会话行统一删除（reload 不会重建列表，必须删行才隐藏）
         HideConversations.removeSecretRows()
         WeConversationApi.reloadConversations()
+        if (previous != 0L) showToastIfEnabled(context, toastTempOff)
     }
 
     // ─────────────────────── 提示自定义 ───────────────────────
@@ -257,7 +269,7 @@ object SecretFriendState {
     /** 仅当「操作提示」总开关打开时弹 Toast。 */
     fun showToastIfEnabled(context: Context?, message: String) {
         if (!toastsEnabled) return
-        if (context != null) showToast(context, message) else showToast(message)
+        QuickSecretToast.show(context ?: HostInfo.application, message)
     }
 
     // ─────────────────── 添加密友菜单文字（共用） ───────────────────
@@ -276,37 +288,25 @@ object SecretFriendState {
      * 找不到返回 null（调用方下次时机重试）。
      */
     fun findHomeTitleTextView(root: View): TextView? {
-        if (root is TextView && root.id == android.R.id.text1) return root
-
-        val screenH = runCatching { root.resources.displayMetrics.heightPixels }.getOrDefault(0)
-        val topBandMax = if (screenH > 0) (screenH * 0.25f).toInt().coerceAtLeast(120) else Int.MAX_VALUE
-        val visibleRect = android.graphics.Rect()
-
+        val screenH = root.resources.displayMetrics.heightPixels
+        val topBandMax = (screenH * 0.25f).toInt().coerceAtLeast(120)
+        val bounds = android.graphics.Rect()
         var best: TextView? = null
-        var bestTop = Int.MAX_VALUE
+        var bestScore = -1
         fun walk(view: View, depth: Int) {
-            if (depth > TITLE_SEARCH_MAX_DEPTH) return
-            if (view is TextView && view.visibility == View.VISIBLE && view.height > 0) {
+            if (depth > TITLE_SEARCH_MAX_DEPTH || !view.isShown) return
+            if (view is TextView && view.getGlobalVisibleRect(bounds) && bounds.top < topBandMax) {
                 val text = view.text?.toString().orEmpty()
-                val desc = view.contentDescription?.toString().orEmpty()
-                // 「微信」或「微信(N)」形态（部分版本标题会带未读数后缀）
-                val textMatches = text == TITLE_TEXT || desc == TITLE_TEXT ||
-                        (text.startsWith(TITLE_TEXT) && text.length <= TITLE_TEXT.length + 4)
-                if (textMatches &&
-                    view.getGlobalVisibleRect(visibleRect) && visibleRect.top < topBandMax &&
-                    visibleRect.top < bestTop
-                ) {
-                    best = view
-                    bestTop = visibleRect.top
+                if (view.id == android.R.id.text1 || text == TITLE_TEXT || text == "WeChat" ||
+                    (text.startsWith(TITLE_TEXT) && text.length <= TITLE_TEXT.length + 5)) {
+                    val score = (if (view.id == android.R.id.text1) 20 else 0) +
+                        (if (view.isClickable) 40 else 0)
+                    if (score >= bestScore) { best = view; bestScore = score }
                 }
             }
-            if (view is ViewGroup) {
-                for (i in 0 until view.childCount) {
-                    walk(view.getChildAt(i) ?: continue, depth + 1)
-                }
-            }
+            if (view is ViewGroup) for (i in 0 until view.childCount) walk(view.getChildAt(i), depth + 1)
         }
-        walk(root, 1)
+        walk(root, 0)
         return best
     }
 

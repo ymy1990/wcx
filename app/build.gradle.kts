@@ -53,6 +53,10 @@ android {
         buildConfigField("String", "TAG", "\"WCX\"")
         buildConfigField("long", "BUILD_TIMESTAMP", "${System.currentTimeMillis()}L")
         buildConfigField("boolean", "BEAUTIFY_ENABLED", "true")
+
+        // Keep upstream release metadata intact; the local maintenance script supplies overrides.
+        providers.gradleProperty("wcxlcVersionCode").orNull?.let { versionCode = it.toInt() }
+        providers.gradleProperty("wcxlcVersionName").orNull?.let { versionName = it }
     }
 
     splits {

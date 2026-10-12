@@ -1,6 +1,9 @@
 package com.Johnny.wcx.features.items.contacts
 
 import com.Johnny.wcx.R
+import com.Johnny.wcx.features.items.secret_friend.SecretFriendTitleGesture
+import com.Johnny.wcx.features.items.secret_friend.SecretFriendState
+import com.Johnny.wcx.features.items.secret_friend.AutoRejectVoip
 
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -75,7 +78,7 @@ import java.lang.reflect.Modifier as JavaModifier
 @Feature(
     name = "隐藏联系人",
     categories = ["联系人与群组"],
-    description = "隐藏指定的联系人"
+    description = "与密友名单共用，提供拍一拍、角标计数及其他列表隐藏；通话拒接与定时规则在密友功能内独立设置"
 )
 object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputBarListener,
     WeDatabaseListenerApi.IQueryListener {
@@ -89,19 +92,12 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
     // need to re-check. New hides rely purely on the query-time filter and never set the marker.
     private const val KEY_LEGACY_MIGRATED = "hidden_parentref_migrated"
 
-    var hiddenContacts
-        get() = WePrefs.getStringSetOrDef(KEY_CONTACTS, emptySet())
+    var hiddenContacts: Set<String>
+        get() = SecretFriendState.getWxIds()
         set(value) {
-            // Muting is a server-synced oplog (OpenImOpLogLogic), so only send it for contacts that
-            // were just added — the previous version re-sent it for the entire set on every save.
-            // NB: un-hiding deliberately does NOT restore the prior mute state; doing so would
-            // overwrite a mute the user set themselves. See the design doc.
-            val newlyHidden = value - WePrefs.getStringSetOrDef(KEY_CONTACTS, emptySet())
-            WePrefs.putStringSet(KEY_CONTACTS, value)
-            for (convId in newlyHidden) {
-                WeConversationApi.setDnd(convId, true)
-            }
-            WeConversationApi.reloadConversations()
+            val added = value - SecretFriendState.getStoredWxIds()
+            SecretFriendState.setWxIds(value)
+            for (id in added) WeConversationApi.setDnd(id, true)
         }
 
     private object ScreenOffReceiver : BroadcastReceiver() {
@@ -227,21 +223,8 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
 
             registerScreenOffReceiver()
 
-            // Triple-click on the main-screen title to toggle temporary show/hide.
-            val titleView = context.window?.decorView
-                ?.findViewById<TextView>(android.R.id.text1) ?: return@hookAfter
-            var clickCount = 0
-            var lastClickTime = Instant.DISTANT_PAST
-            titleView.setOnClickListener {
-                if (!tripleClickTitle) return@setOnClickListener
-                val now = now()
-                if (now - lastClickTime > TRIPLE_TAP_WINDOW) clickCount = 1 else clickCount++
-                lastClickTime = now
-                if (clickCount >= 3) {
-                    clickCount = 0
-                    toggleTemporarilyShown(context)
-                }
-            }
+            SecretFriendTitleGesture.watch(context)
+
         }
 
         // --- shake to leave ---
@@ -291,7 +274,7 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
 
         // --- voip ---
 
-        installVoipHooks()
+        // Independent secret-call support owns the VoIP hooks.
 
         // --- moments inline likes/comments (mutual-friend posts) ---
 
@@ -319,13 +302,12 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
         // passed while the process was down. See hidecontacts/HideContactsSchedule.kt — the catch-up
         // deliberately touches nothing but temporarilyShown, since no Activity exists at this point.
 
-        installSchedules()
+        // Independent HideSchedules owns the secret scheduler.
 
         WeConversationApi.reloadConversations()
     }
 
     override fun onDisable() {
-        uninstallSchedules()
         unregisterScreenOffReceiver()
         ShakeDetector.stop()
         chattingUi?.clear()
@@ -342,13 +324,10 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
      */
     internal fun toggleTemporarilyShown(context: Context) {
         if (temporarilyShown) {
-            temporarilyShown = false
-            showToast(context, ("已恢复隐藏联系人"))
+            SecretFriendState.tempOff(context)
         } else {
-            temporarilyShown = true
-            showToast(context, ("已临时显示所有隐藏的联系人"))
+            SecretFriendState.tempShowForMinutes(context)
         }
-        WeConversationApi.reloadConversations()
     }
 
     /**
@@ -372,36 +351,11 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
         when (text) {
             "#show" -> {
                 chatFooter.lastText = ""
-                if (temporarilyShown) {
-                    showToast(
-                        chatFooter.context,
-                        ("已经是临时显示状态"),
-                    )
-                    return
-                }
-                temporarilyShown = true
-                showToast(
-                    chatFooter.context,
-                    ("已临时显示所有隐藏的联系人，输入 #hide 恢复隐藏"),
-                )
-                WeConversationApi.reloadConversations()
+                if (!temporarilyShown) SecretFriendState.tempShowForMinutes(chatFooter.context)
             }
-
             "#hide" -> {
                 chatFooter.lastText = ""
-                if (!temporarilyShown) {
-                    showToast(
-                        chatFooter.context,
-                        ("没有需要恢复的隐藏联系人"),
-                    )
-                    return
-                }
-                temporarilyShown = false
-                showToast(
-                    chatFooter.context,
-                    ("已恢复隐藏联系人"),
-                )
-                WeConversationApi.reloadConversations()
+                SecretFriendState.tempOff(chatFooter.context)
             }
         }
     }
@@ -446,18 +400,24 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
         }
     }
 
-    private var temporarilyShown = false
+    private var temporarilyShown: Boolean
+        get() = SecretFriendState.isTemporarilyShown()
+        set(value) {
+            if (value == SecretFriendState.isTemporarilyShown()) return
+            if (value) SecretFriendState.tempShowUntil(Long.MAX_VALUE)
+            else SecretFriendState.tempOff()
+        }
 
     /**
      * The predicate every hook should use: a contact counts as hidden only while the temporary-show
      * escape hatch (`#show` / triple-tap title) is off.
      */
-    internal fun isHiddenNow(wxId: String): Boolean = !temporarilyShown && wxId in hiddenContacts
+    internal fun isHiddenNow(wxId: String): Boolean = !temporarilyShown && SecretFriendState.isSecret(wxId)
 
     /** For SQL rewriters, which bail wholesale rather than testing individual wxids. */
     internal val isTemporarilyShown: Boolean get() = temporarilyShown
 
-    internal val autoRejectVoipEnabled: Boolean get() = autoRejectVoip
+    internal val autoRejectVoipEnabled: Boolean get() = AutoRejectVoip.isEnabled
 
     private var autoRejectVoip by prefOption("hide_auto_reject", false)
     private var tripleClickTitle by prefOption("hide_triple_click_title", false)
@@ -492,34 +452,10 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
     private val markingAsRead = ThreadLocal.withInitial { false }
 
     private fun hookNewMessageNotification() {
-        val method = WeConversationApi.methodNotifyConversationChanged
-        if (method.isPlaceholder) {
-            WeLogger.w(TAG, "conversation notify method not resolved; new-message suppression unavailable")
-            return
-        }
-
-        method.hookBefore {
-            val eventType = args[0] as? Int ?: return@hookBefore
-            if (eventType != 3) return@hookBefore
-            if (temporarilyShown) return@hookBefore
-            val talker = args[2] as? String ?: return@hookBefore
-            if (talker.isEmpty()) return@hookBefore
-            if (talker !in hiddenContacts) return@hookBefore
-
-            // Already inside our own markAsRead: this is the storage echoing our write back at us.
-            // Still cancel the event so the row never reaches an adapter, but do not write again.
-            if (markingAsRead.get() == true) {
-                result = null
-                return@hookBefore
-            }
-
-            markingAsRead.set(true)
-            try {
-                WeConversationApi.markAsRead(talker)
-            } finally {
-                markingAsRead.set(false)
-            }
-            result = null
+        WeConversationApi.methodNotifyConversationChanged.hookBefore {
+            val kind = args.getOrNull(0) as? Int ?: return@hookBefore
+            val talker = args.getOrNull(2) as? String ?: return@hookBefore
+            if (kind == 3 && isHiddenNow(talker)) result = null
         }
     }
 
@@ -563,103 +499,9 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
         }
     }
 
-    override fun onClick(context: ComponentActivity) {
-        val regularContacts = WeDatabaseApi.getFriends() + WeDatabaseApi.getGroups()
+    override fun onClick(context: ComponentActivity) =
+        com.Johnny.wcx.features.items.secret_friend.SecretFriendManager.openSelector(context)
 
-        showComposeDialog(context) {
-            AlertDialogContent(
-                title = { Text("隐藏联系人") },
-                text = {
-                    var autoRejectVoipInput by remember { mutableStateOf(autoRejectVoip) }
-                    var tripleClickTitleInput by remember { mutableStateOf(tripleClickTitle) }
-
-                    SegmentedColumn(contentPadding = PaddingValues(0.dp)) {
-                        item {
-                            BaseWidget(
-                                iconPlaceholder = false,
-                                title = "配置隐藏列表",
-                                description = "点击配置联系人隐藏列表",
-                                onClick = {
-                                showComposeDialog(context) {
-                                    ContactsSelector(
-                                        title = ("选择要隐藏的联系人"),
-                                        contacts = regularContacts,
-                                        initialSelectedWxIds = hiddenContacts,
-                                        onDismiss = onDismiss
-                                    ) {
-                                        showToast(
-                                            localizedContactsQuantity(
-                                                R.plurals.contacts_hide_saved,
-                                                it.size,
-                                                it.size,
-                                            ),
-                                        )
-                                        hiddenContacts = it
-                                        onDismiss()
-                                    }
-                                }
-                                },
-                                trailingContent = {
-                                    Icon(
-                                        MaterialSymbols.Outlined.Chevron_right,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                },
-                            )
-                        }
-                        item {
-                            SwitchWidget(
-                                iconPlaceholder = false,
-                                title = "自动拒绝音视频通话",
-                                description = "关闭时仅隐藏来电，对方会一直响到超时；开启后立即向对方发送拒接",
-                                checked = autoRejectVoipInput,
-                                onCheckedChange = {
-                                    autoRejectVoipInput = it
-                                    autoRejectVoip = it
-                                },
-                            )
-                        }
-                        item {
-                            BaseWidget(
-                                iconPlaceholder = false,
-                                title = "定时显示/隐藏",
-                                description = "到点自动临时显示或恢复隐藏，不会改动隐藏列表",
-                                onClick = { showSchedulesDialog(context) },
-                                trailingContent = {
-                                    Icon(
-                                        MaterialSymbols.Outlined.Chevron_right,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                },
-                            )
-                        }
-                        item {
-                            SwitchWidget(
-                                iconPlaceholder = false,
-                                title = "三击标题切换显隐",
-                                description = "连续三击主页顶部标题栏，可临时显示或恢复隐藏联系人",
-                                checked = tripleClickTitleInput,
-                                onCheckedChange = {
-                                    tripleClickTitleInput = it
-                                    tripleClickTitle = it
-                                },
-                            )
-                        }
-                    }
-                },
-                dismissButton = {
-                    TextButton(onDismiss) { Text("关闭") }
-                },
-            )
-        }
-    }
-
-    // WeChat's SQLite wrapper query: d95.b0.f(String sql, String[] args, int) -> Cursor. The
-    // homepage conversation-list cursor (com.tencent.mm.storage.m4.A/B) is built through this
-    // wrapper, NOT the standard SQLiteDatabase.rawQuery path WeDatabaseListenerApi hooks, so we
-    // intercept it directly — the same chokepoint ConversationGrouping/AggregateChats use.
     internal val methodSqliteWrapperRawQuery by dexMethod(allowFailure = true) {
         matcher {
             modifiers = JavaModifier.PUBLIC
