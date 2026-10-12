@@ -214,6 +214,8 @@ private fun collectScriptDiagnostics(context: Context): List<Pair<String, String
         if (dbApi?.isReady() == true) "是（已取得 SqliteDB 对象）"
         else "✗ 否（CoreStorage 里找不到 SqliteDB 对象）"
     }.getOrDefault("未知")
+    rows += "数据库取库自检" to runCatching { dbApi?.diagnose() ?: "无（数据库 API 未解析）" }
+        .getOrDefault("未知")
     rows += "DexKit 解析" to runCatching { HchatScriptBootstrap.dexParseInfo() }.getOrDefault("未知")
     rows += "脚本 Hook 注册数" to runCatching { "${HookRegistry.get().size()} 个" }
         .getOrDefault("读取失败")
