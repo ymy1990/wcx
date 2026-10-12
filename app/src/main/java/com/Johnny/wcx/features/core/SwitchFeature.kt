@@ -39,9 +39,10 @@ abstract class SwitchFeature : BaseFeature() {
     var isEnabled
         get() = _isEnabled
         set(value) {
-            if (_isEnabled == value) return
-            _isEnabled = value
-            if (value) {
+            val effective = value && (SECRET_FRIEND_CATEGORY !in categories || Preferences.secretFriendMasterEnabled)
+            if (_isEnabled == effective) return
+            _isEnabled = effective
+            if (effective) {
                 WeLogger.i("SwitchFeature", "enabling $displayName...")
                 enable()
             } else {

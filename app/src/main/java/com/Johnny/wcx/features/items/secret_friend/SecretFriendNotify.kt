@@ -1,5 +1,7 @@
 package com.Johnny.wcx.features.items.secret_friend
 
+import androidx.compose.runtime.Composable
+import com.Johnny.wcx.ui.content.m3.TextFieldDialogWidget
 import android.app.Activity
 import android.content.Context
 import android.os.Bundle
@@ -67,6 +69,12 @@ object VibrateOnSecretMsg : ClickableFeature(), WeDatabaseListenerApi.IInsertLis
     override fun onClick(context: androidx.activity.ComponentActivity) {
         vibrateNow(vibrateStrength)
         WeLogger.d(TAG, "test vibration sent")
+    }
+
+    @Composable override fun Ui() {
+        TextFieldDialogWidget(title = "震动强度", value = vibrateStrength.toString(),
+            onValueChange = { it.toIntOrNull()?.let { value -> vibrateStrength = value.coerceIn(1, 5) } },
+            dialogTitle = "震动强度（1–5）", confirmLabel = "确定", dismissLabel = "取消")
     }
 
     private fun vibrateNow(strength: Int) {
@@ -140,188 +148,54 @@ object TeamNotify : SwitchFeature(), WeDatabaseListenerApi.IInsertListener {
 
 /**
  * 底栏字体加粗（浮云语义）：有密友未读时底部导航「微信」文字加粗（强度可调）。
- * - MainTabUI doOnCreate 后收集底栏 tab TextView（工程已验证锚点）；
- * - LauncherUI onResume 清除加粗（回到微信即视为已读）；
- * - 密友消息入库时对「微信」tab 应用加粗。
+ * 与圆点共用按密友记录的未读状态；定位当前可见底栏，打开对应对话后清除。
  */
 @Feature(
     name = "底栏字体加粗",
     categories = ["密友功能"],
-    description = "收到密友消息时底部导航栏「微信」文字加粗提醒（强度可调），回到主页自动恢复"
+    description = "隐藏状态下有密友未读消息时，底栏「微信」加粗提醒；打开对应对话后清除（强度可调）"
 )
 object BottomBarBold : SwitchFeature() {
-
-    private const val TAG = "BottomBarBold"
-
-    /** 加粗强度 1–5（映射 Paint 描边宽度）。 */
     var boldStrength by prefOption("secret_friend_bold_strength", 3)
-
-    /** 底栏 tab 文字 → TextView（doOnCreate 后收集）。 */
-    private var tabViews: Map<String, TextView> = emptyMap()
+    @Composable override fun Ui() {
+        TextFieldDialogWidget(title = "字体加粗强度", value = boldStrength.toString(),
+            onValueChange = { it.toIntOrNull()?.let { value -> boldStrength = value.coerceIn(1, 5) } },
+            dialogTitle = "字体加粗强度（1–5）", confirmLabel = "确定", dismissLabel = "取消")
+    }
 
     private val secretMsgListener = WeDatabaseListenerApi.IInsertListener { table, values ->
         val talker = secretIncomingTalker(table, values) ?: return@IInsertListener
-        if (SecretFriendState.isTemporarilyShown()) return@IInsertListener
-        WeLogger.d(TAG, "secret message from $talker, bolding bottom tab")
-        runOnUiThread { setBold(true) }
+        if (!SecretFriendState.isTemporarilyShown()) SecretMessageUi.received(talker)
     }
-
-    override fun onEnable() {
-        WeMainActivityBeautifyApi.methodDoOnCreate.hookAfter {
-            // doOnCreate 的 thisObject 是 MainTabUI 容器而非 Activity（同 HideContacts），
-            // 需从其 Activity 类型字段解出主页 Activity
-            val activity = thisObject?.reflekt()
-                ?.firstFieldOrNull { type { Activity::class.java.isAssignableFrom(it) } }
-                ?.get() as? Activity ?: return@hookAfter
-            val root = activity.window?.decorView ?: return@hookAfter
-            collectTabViews(root)
-        }
-
-        // 回到主页（LauncherUI resume）即视为已读，清除加粗
-        LauncherUI::class.reflekt()
-            .firstMethod {
-                name = "onResume"
-                superclass()
-            }
-            .hookAfter {
-                setBold(false)
-            }
-
-        WeDatabaseListenerApi.addListener(secretMsgListener)
-    }
-
-    override fun onDisable() {
-        runCatching { WeDatabaseListenerApi.removeListener(secretMsgListener) }
-            .onFailure { WeLogger.e(TAG, "removeListener failed", it) }
-    }
-
-    private fun collectTabViews(root: View) {
-        val wanted = setOf("微信", "通讯录", "发现", "我")
-        val found = mutableMapOf<String, TextView>()
-        fun walk(view: View, depth: Int) {
-            if (depth > 18) return
-            if (view is TextView) {
-                val text = view.text?.toString().orEmpty()
-                if (text in wanted && text !in found) found[text] = view
-            }
-            if (view is ViewGroup) {
-                for (i in 0 until view.childCount) walk(view.getChildAt(i) ?: return, depth + 1)
-            }
-        }
-        walk(root, 0)
-        tabViews = found
-        if (found.isEmpty()) WeLogger.w(TAG, "bottom tab TextViews not found; bold prompt unavailable")
-    }
-
-    private fun setBold(bold: Boolean) {
-        val view = tabViews["微信"] ?: return
-        view.paint.isFakeBoldText = bold
-        view.paint.strokeWidth = if (bold) boldStrength.coerceIn(1, 5) * 0.4f else 0f
-        view.invalidate()
-    }
+    override fun onEnable() { SecretMessageUi.bootstrap(); WeDatabaseListenerApi.addListener(secretMsgListener) }
+    override fun onDisable() { WeDatabaseListenerApi.removeListener(secretMsgListener) }
 }
 
 // ─────────────────────────── 21. 圆点提示 ───────────────────────────
 
 /**
  * 圆点提示（浮云语义）：有密友未读时搜索框旁显示红点（大小可调）。
- * MainTabUI doOnCreate 后在 decorView 上叠一个红点 View，锚定「搜索」入口的位置
- * （OnLayoutChangeListener 跟随布局），密友消息 → 显示，LauncherUI resume → 隐藏。
+ * 绑定当前可见搜索入口，页面重建时重新定位；打开对应密友对话后清除。
  */
 @Feature(
     name = "圆点提示",
     categories = ["密友功能"],
-    description = "有密友未读消息时搜索框旁显示一个红点（大小可调），回到主页自动消失"
+    description = "隐藏状态下有密友未读消息时，搜索入口旁显示红点；打开对应对话后清除（大小可调）"
 )
 object RedDotPrompt : SwitchFeature() {
-
-    private const val TAG = "RedDotPrompt"
-
-    /** 红点直径 4–12 dp。 */
     var dotSizeDp by prefOption("secret_friend_dot_size", 6)
-
-    private var dotView: View? = null
-    private var anchorView: View? = null
+    @Composable override fun Ui() {
+        TextFieldDialogWidget(title = "圆点大小(dp)", value = dotSizeDp.toString(),
+            onValueChange = { it.toIntOrNull()?.let { value -> dotSizeDp = value.coerceIn(4, 12) } },
+            dialogTitle = "圆点大小(dp)（4–12）", confirmLabel = "确定", dismissLabel = "取消")
+    }
 
     private val secretMsgListener = WeDatabaseListenerApi.IInsertListener { table, values ->
         val talker = secretIncomingTalker(table, values) ?: return@IInsertListener
-        if (SecretFriendState.isTemporarilyShown()) return@IInsertListener
-        runOnUiThread { dotView?.visibility = View.VISIBLE }
+        if (!SecretFriendState.isTemporarilyShown()) SecretMessageUi.received(talker)
     }
-
-    override fun onEnable() {
-        WeMainActivityBeautifyApi.methodDoOnCreate.hookAfter {
-            // doOnCreate 的 thisObject 是 MainTabUI 容器而非 Activity（同 HideContacts），
-            // 需从其 Activity 类型字段解出主页 Activity
-            val activity = thisObject?.reflekt()
-                ?.firstFieldOrNull { type { Activity::class.java.isAssignableFrom(it) } }
-                ?.get() as? Activity ?: return@hookAfter
-            runOnUiThread { attachDot(activity) }
-        }
-
-        LauncherUI::class.reflekt()
-            .firstMethod {
-                name = "onResume"
-                superclass()
-            }
-            .hookAfter {
-                runOnUiThread { dotView?.visibility = View.INVISIBLE }
-            }
-
-        WeDatabaseListenerApi.addListener(secretMsgListener)
-    }
-
-    override fun onDisable() {
-        runCatching { WeDatabaseListenerApi.removeListener(secretMsgListener) }
-            .onFailure { WeLogger.e(TAG, "removeListener failed", it) }
-    }
-
-    /** 找搜索入口 → 在 decorView 上叠红点（找不到锚点则整段跳过）。 */
-    private fun attachDot(activity: Activity) {
-        if (dotView != null) return
-        val root = activity.window?.decorView as? ViewGroup ?: return
-
-        val anchor = findViewByText(root, "搜索") ?: return
-        anchorView = anchor
-
-        val dot = View(activity)
-        val sizePx = (dotSizeDp.coerceIn(4, 12) * root.resources.displayMetrics.density).toInt()
-        val params = ViewGroup.LayoutParams(sizePx, sizePx)
-        dot.background = android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.OVAL
-            setColor(0xFFFA5151.toInt())
-        }
-        dot.visibility = View.INVISIBLE
-        root.addView(dot, params)
-        dotView = dot
-
-        fun reposition() {
-            val view = dotView ?: return
-            val anchorNow = anchorView ?: return
-            if (!anchorNow.isAttachedToWindow) return
-            val anchorLoc = IntArray(2).also { anchorNow.getLocationOnScreen(it) }
-            val rootLoc = IntArray(2).also { root.getLocationOnScreen(it) }
-            val x = anchorLoc[0] - rootLoc[0] + anchorNow.width - view.layoutParams.width
-            val y = anchorLoc[1] - rootLoc[1] - view.layoutParams.height / 2
-            view.translationX = x.toFloat()
-            view.translationY = y.toFloat()
-        }
-
-        anchor.viewTreeObserver.addOnGlobalLayoutListener { reposition() }
-        reposition()
-        WeLogger.d(TAG, "red dot attached near search entry")
-    }
-
-    private fun findViewByText(root: View, text: String): View? {
-        if (root is TextView && root.text?.toString().orEmpty() == text) return root
-        if (root is TextView && (root.hint?.toString().orEmpty()) == text) return root
-        if (root is ViewGroup) {
-            for (i in 0 until root.childCount) {
-                findViewByText(root.getChildAt(i) ?: continue, text)?.let { return it }
-            }
-        }
-        return null
-    }
+    override fun onEnable() { SecretMessageUi.bootstrap(); WeDatabaseListenerApi.addListener(secretMsgListener) }
+    override fun onDisable() { WeDatabaseListenerApi.removeListener(secretMsgListener) }
 }
 
 // ─────────────────────────── 22. 拦截扫码登录 ───────────────────────────

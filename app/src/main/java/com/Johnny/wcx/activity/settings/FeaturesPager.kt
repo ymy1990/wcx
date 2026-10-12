@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
+import com.Johnny.wcx.ui.content.MiuixSmallTitle
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.Composable
@@ -234,50 +236,25 @@ fun CategoryDetailScreen(categoryName: String, onBack: () -> Unit) {
     ) {
         if (items.isEmpty()) return@MiuixListScaffold
 
-        if (isSecretFriendCategory) {
-            item {
-                Column(
-                    modifier = Modifier
-                        .padding(top = 12.dp)
-                        .groupedCardItem(0, 1),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "密友功能总开关",
-                                fontSize = MiuixTheme.textStyles.headline1.fontSize,
-                                fontWeight = FontWeight.Medium,
-                                color = MiuixTheme.colorScheme.onSurface,
-                            )
-                            Text(
-                                text = "关闭后本分类下所有功能都不生效（各开关状态保留）",
-                                fontSize = MiuixTheme.textStyles.body2.fontSize,
-                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            )
-                        }
-                        Switch(checked = masterEnabled, onCheckedChange = ::applyMasterSwitch)
-                    }
-                }
+        val groups = if (isSecretFriendCategory) SecretFriendSettingsGroups.group(items)
+            else listOf("" to items)
+        groups.forEach { (title, groupItems) ->
+            if (title.isNotEmpty()) item(key = "group:$title") {
+                MiuixSmallTitle(text = title, modifier = Modifier.padding(top = 12.dp))
             }
-        }
-
-        itemsIndexed(items, key = { _, item -> item.name }) { index, item ->
-            Column(
-                modifier = Modifier
-                    .then(if (index == 0) Modifier.padding(top = 12.dp) else Modifier)
-                    .groupedCardItem(index, items.size),
-            ) {
-                FeatureRow(
-                    item = item,
-                    checked = switchStates[item.name] ?: false,
-                    onCheckedChange = { switchStates[item.name] = it },
-                )
-                item.Ui()
+            itemsIndexed(groupItems, key = { _, item -> item.name }) { index, item ->
+                Column(modifier = Modifier.groupedCardItem(index, groupItems.size)) {
+                    FeatureRow(
+                        item = item,
+                        checked = if (isSecretFriendCategory && item.name == "密友名单管理") masterEnabled
+                            else switchStates[item.name] ?: false,
+                        onCheckedChange = { next ->
+                            switchStates[item.name] = next
+                            if (isSecretFriendCategory && item.name == "密友名单管理") applyMasterSwitch(next)
+                        },
+                    )
+                    item.Ui()
+                }
             }
         }
 

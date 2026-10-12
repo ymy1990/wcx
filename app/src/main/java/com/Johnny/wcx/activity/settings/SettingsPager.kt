@@ -156,7 +156,7 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 // ---------------------------------------------------------------------------
 
 @Composable
-fun SettingsPager(onOpenLicense: () -> Unit, onOpenAcknowledgements: () -> Unit) {
+fun SettingsPager(onOpenLicense: () -> Unit, onOpenAcknowledgements: () -> Unit, onOpenCategory: (String) -> Unit) {
     val context = LocalComponentActivity.current
 
     var showClearConfirm by remember { mutableStateOf(false) }
@@ -195,6 +195,12 @@ fun SettingsPager(onOpenLicense: () -> Unit, onOpenAcknowledgements: () -> Unit)
                     summary = "六款卡通主题一键应用：全局沉浸壁纸（主页/设置/朋友圈等全部页面）+ 对应主题气泡，支持透明度调节与备份/恢复",
                     icon = MaterialSymbols.Outlined.Palette,
                     onClick = { com.Johnny.wcx.features.items.beautify.ThemeStore.onClick(context) },
+                )
+                PrefArrow(
+                    title = "密友功能",
+                    summary = "密友名单管理与全部密友开关：总开关、会话/通讯录/朋友圈隐藏、禁止进入聊天与查看资料等，含名单编辑",
+                    icon = MaterialSymbols.Outlined.Account_circle,
+                    onClick = { onOpenCategory("密友功能") },
                 )
             }
         }

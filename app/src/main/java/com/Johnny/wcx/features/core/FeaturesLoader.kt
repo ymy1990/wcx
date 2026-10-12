@@ -26,6 +26,7 @@ object FeaturesLoader {
     private const val TAG = "FeaturesLoader"
 
     fun loadFeatures() {
+        com.Johnny.wcx.features.items.secret_friend.SecretFriendMigrations.migrate()
         val allFeatures = FeaturesProvider.ALL_HOOK_ITEMS
         val allDexItems = allFeatures.filterIsInstance<IResolveDex>()
 

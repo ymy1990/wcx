@@ -40,63 +40,20 @@ import java.lang.ref.WeakReference
 @Feature(
     name = "多击标题解除",
     categories = ["密友功能"],
-    description = "连续点击微信主页标题可临时解除隐藏 30 分钟（点击次数与时间窗口可调）"
+    description = "连续点击微信主页标题可切换临时显示/恢复隐藏（点击次数与时间窗口可调）"
 )
 object MultiClickTitleUnlock : SwitchFeature() {
-
-    private const val TAG = "MultiClickTitleUnlock"
-
-    /** 触发所需连续点击次数（默认 3）。 */
     var clickCount by prefOption("secret_friend_unlock_click_count", 3)
-
-    /** 计次窗口毫秒数（默认 1000）。 */
     var clickWindowMs by prefOption("secret_friend_unlock_click_window_ms", 1000)
-
-    private var clickCounter = 0
-    private var lastClickAt = 0L
-    private var warnedTitleMissing = false
-
-    override fun onEnable() {
-        // LauncherUI.onResume 后标题布局已就绪; 与 HideContacts 的三击标题互不干扰
-        // (本开关挂 setOnClickListener, HideContacts 亦挂同名监听, 后启用的替换前者——
-        //  两个功能都开时以最后启用者为准, 界面上有各自开关说明)
-        val resumeHook = runCatching {
-            LauncherUI::class.reflekt()
-                .firstMethod {
-                    name = "onResume"
-                    superclass()
-                }
-        }.getOrElse {
-            WeLogger.e(TAG, "hook LauncherUI.onResume failed; multi-click unlock unavailable", it)
-            return
-        }
-        resumeHook.hookAfter {
-                val activity = thisObject as? android.app.Activity ?: return@hookAfter
-                val root = activity.window?.decorView ?: return@hookAfter
-                root.post {
-                    val title = SecretFriendState.findHomeTitleTextView(root)
-                    if (title == null) {
-                        if (!warnedTitleMissing) {
-                            warnedTitleMissing = true
-                            WeLogger.w(TAG, "home title view not found; multi-click unlock not attached")
-                        }
-                        return@post
-                    }
-                    WeLogger.i(TAG, "multi-click unlock attached to ${title.javaClass.name}")
-                    title.setOnClickListener { view ->
-                        if (SecretFriendState.isEmpty()) return@setOnClickListener
-                        val now = System.currentTimeMillis()
-                        if (now - lastClickAt > clickWindowMs.coerceAtLeast(200)) clickCounter = 1
-                        else clickCounter++
-                        lastClickAt = now
-                        if (clickCounter >= clickCount.coerceAtLeast(2)) {
-                            clickCounter = 0
-                            WeLogger.i(TAG, "title multi-click unlock triggered")
-                            SecretFriendState.tempShowForMinutes(view.context)
-                        }
-                    }
-                }
-            }
+    override fun onEnable() = SecretFriendTitleGesture.refresh()
+    override fun onDisable() = SecretFriendTitleGesture.refresh()
+    @Composable override fun Ui() {
+        TextFieldDialogWidget(title = "连续点击次数", value = clickCount.toString(),
+            onValueChange = { it.toIntOrNull()?.let { v -> clickCount = v.coerceIn(2, 10) } },
+            dialogTitle = "连续点击次数（2–10）", confirmLabel = "确定", dismissLabel = "取消")
+        TextFieldDialogWidget(title = "计次窗口(毫秒)", value = clickWindowMs.toString(),
+            onValueChange = { it.toIntOrNull()?.let { v -> clickWindowMs = v.coerceIn(200, 5000) } },
+            dialogTitle = "计次窗口（毫秒，200–5000）", confirmLabel = "确定", dismissLabel = "取消")
     }
 }
 
@@ -120,77 +77,8 @@ object LongPressTitleUnlock : SwitchFeature() {
     /** 长按触发时长毫秒（默认 800）。 */
     var longPressMs by prefOption("secret_friend_long_press_ms", 800)
 
-    private val handler = Handler(Looper.getMainLooper())
-    private var pending = false
-    private var warnedTitleMissing = false
-
-    private val triggerRunnable = Runnable {
-        if (!pending) return@Runnable
-        pending = false
-        if (SecretFriendState.isTemporarilyShown()) {
-            WeLogger.i(TAG, "title long-press: restoring hidden state")
-            SecretFriendState.tempOff()
-        } else {
-            WeLogger.i(TAG, "title long-press unlock triggered")
-            SecretFriendState.tempShowForMinutes()
-        }
-    }
-
-    override fun onEnable() {
-        val resumeHook = runCatching {
-            LauncherUI::class.reflekt()
-                .firstMethod {
-                    name = "onResume"
-                    superclass()
-                }
-        }.getOrElse {
-            WeLogger.e(TAG, "hook LauncherUI.onResume failed; long-press unlock unavailable", it)
-            return
-        }
-        resumeHook.hookAfter {
-                val activity = thisObject as? android.app.Activity ?: return@hookAfter
-                val root = activity.window?.decorView ?: return@hookAfter
-                root.post {
-                    val title = SecretFriendState.findHomeTitleTextView(root)
-                    if (title == null) {
-                        if (!warnedTitleMissing) {
-                            warnedTitleMissing = true
-                            WeLogger.w(TAG, "home title view not found; long-press unlock not attached")
-                        }
-                        return@post
-                    }
-                    // TextView 不可点击时触摸流（MOVE/UP）会被父级接管，自计时无法正常工作，
-                    // 必须显式置为可点击/可长按（重复 onResume 挂监听是替换语义，不叠加）
-                    title.isClickable = true
-                    title.isLongClickable = true
-                    val touchSlop = ViewConfigurationCompat.scaledTouchSlop(title)
-                    title.setOnTouchListener { view, event ->
-                        when (event.actionMasked) {
-                            MotionEvent.ACTION_DOWN -> {
-                                pending = true
-                                handler.postDelayed(triggerRunnable, longPressMs.coerceIn(300, 5000).toLong())
-                            }
-
-                            MotionEvent.ACTION_MOVE -> {
-                                // 手指滑出标题区域即取消（自计时版本需要自己判越界）
-                                if (event.x < -touchSlop || event.y < -touchSlop ||
-                                    event.x > view.width + touchSlop || event.y > view.height + touchSlop
-                                ) {
-                                    pending = false
-                                    handler.removeCallbacks(triggerRunnable)
-                                }
-                            }
-
-                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                                pending = false
-                                handler.removeCallbacks(triggerRunnable)
-                            }
-                        }
-                        false // 不消费: 正常点击派发不受影响, 与「多击标题解除」可同时启用
-                    }
-                }
-            }
-    }
+    override fun onEnable() = SecretFriendTitleGesture.refresh()
+    override fun onDisable() = SecretFriendTitleGesture.refresh()
 
     @Composable
     override fun Ui() {
@@ -198,20 +86,13 @@ object LongPressTitleUnlock : SwitchFeature() {
             title = "长按触发时长(毫秒)",
             value = longPressMs.toString(),
             onValueChange = { raw ->
-                raw.filter { it.isDigit() }.take(5).toIntOrNull()?.let { longPressMs = it }
+                raw.filter { it.isDigit() }.take(5).toIntOrNull()?.let { longPressMs = it.coerceIn(300, 5000) }
             },
             dialogTitle = "长按触发时长（毫秒，300–5000）",
             confirmLabel = "确定",
             dismissLabel = "取消",
         )
     }
-}
-
-/** ViewConfiguration 取值的小包装（避免直接依赖平台类名）。 */
-private object ViewConfigurationCompat {
-    fun scaledTouchSlop(view: View): Int = runCatching {
-        android.view.ViewConfiguration.get(view.context).scaledTouchSlop
-    }.getOrDefault(24)
 }
 
 // ─────────────────────────── 26. 锁屏隐藏 ───────────────────────────
@@ -284,65 +165,19 @@ object AutoRestoreLockScreen : SwitchFeature() {
     }
 }
 
-// ─────────────────── 27. 离开对话 / 离开微信隐藏 ───────────────────
+// ─────────────────── 27. Independent restoration policies ───────────────────
+@Feature(name = "离开对话恢复隐藏", categories = ["密友功能"],
+    description = "从任意对话返回微信主页时恢复密友隐藏；进入对话和聊天详情页不触发")
+object AutoRestoreOnLeave : SwitchFeature() {
+    override val defaultEnabled: Boolean get() { SecretFriendMigrations.migrate(); return false }
+    override fun onEnable() { ConversationReturnRecovery.bootstrap(); ConversationReturnRecovery.flagsChanged() }
+    override fun onDisable() = ConversationReturnRecovery.flagsChanged()
+}
 
-/**
- * 离开对话/离开微信隐藏（浮云 rehideOnLeaveChat + rehideOnLeaveApp 合并开关）：
- * - 离开任意对话（ChattingUI.onPause）→ tempOff()；
- * - 离开主页（LauncherUI.onPause）→ tempOff()；
- * - 微信失焦（LauncherUI.onWindowFocusChanged(false)，即按 HOME 切走）→ tempOff()。
- * 临时显示期间进入过的密友对话，返回主页时会话列表已恢复隐藏，无需额外 finish。
- */
-@Feature(
-    name = "离开对话/离开微信隐藏",
-    categories = ["密友功能"],
-    description = "退出对话、离开主页或按 HOME 切走微信时立即恢复密友隐藏（临时解除的自动恢复）"
-)
-object AutoRestoreOnLeave : SwitchFeature(), IResolveDex {
-
-    private const val TAG = "AutoRestoreOnLeave"
-
-    /** LauncherUI.onWindowFocusChanged(boolean)（allowFailure：未声明时跳过，onPause 已兜底）。 */
-    private val methodLauncherFocusChanged by dexMethod(allowFailure = true) {
-        matcher {
-            declaredClass = "com.tencent.mm.ui.LauncherUI"
-            name = "onWindowFocusChanged"
-            paramCount = 1
-        }
-    }
-
-    override fun onEnable() {
-        // 离开任意对话即恢复隐藏
-        ChattingUI::class.reflekt()
-            .firstMethod { name = "onPause" }
-            .hookAfter {
-                if (SecretFriendState.isTemporarilyShown()) {
-                    WeLogger.d(TAG, "leaving conversation, restoring hidden state")
-                    SecretFriendState.tempOff()
-                }
-            }
-
-        // 离开主页 / 微信失焦即恢复隐藏
-        LauncherUI::class.reflekt()
-            .firstMethod {
-                name = "onPause"
-                superclass()
-            }
-            .hookAfter {
-                if (SecretFriendState.isTemporarilyShown()) {
-                    WeLogger.d(TAG, "leaving home screen, restoring hidden state")
-                    SecretFriendState.tempOff()
-                }
-            }
-
-        if (!methodLauncherFocusChanged.isPlaceholder) {
-            methodLauncherFocusChanged.hookAfter {
-                val hasFocus = args.getOrNull(0) as? Boolean ?: return@hookAfter
-                if (!hasFocus && SecretFriendState.isTemporarilyShown()) {
-                    WeLogger.d(TAG, "WeChat lost window focus, restoring hidden state")
-                    SecretFriendState.tempOff()
-                }
-            }
-        }
-    }
+@Feature(name = "离开主页/切走微信恢复隐藏", categories = ["密友功能"],
+    description = "离开主页进入其他非聊天页面，或按 HOME／切换应用时恢复密友隐藏；进入对话不触发")
+object AutoRestoreOnAppLeave : SwitchFeature() {
+    override val defaultEnabled: Boolean get() { SecretFriendMigrations.migrate(); return false }
+    override fun onEnable() { ConversationReturnRecovery.bootstrap(); ConversationReturnRecovery.flagsChanged() }
+    override fun onDisable() = ConversationReturnRecovery.flagsChanged()
 }
