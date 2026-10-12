@@ -1,0 +1,42 @@
+本地密友版持续更新（2026-10-12）
+
+维护分支：codex/merge-secret-friend-wcxlc
+工作副本：C:/Users/Yu/.codex/worktrees/merge-secret-friend-wcxlc/VX
+更新来源：https://github.com/ymy1990/wcx.git 的 master
+origin 仍是 Johnny520 的原仓库；脚本明确使用你的 fork URL，不依赖 origin。
+
+平时使用：
+1. 先让你的 GitHub fork 更新到想使用的 WCX 版本。
+2. 双击 D:/projects/VX/output/更新密友版.cmd。
+3. 脚本拉取 fork、保留当前分支作为备份、合并新提交，再编译本地签名 APK。
+4. APK 输出到 D:/projects/VX/output/maintenance。
+5. 手机连接后验证标题三连击、两个恢复开关、收到密友消息及打开对应对话后的提示清除，再使用新包。
+
+PowerShell 用法（在工作副本中）：
+./Sync-WcxLocal.ps1 -CheckOnly   只检查更新，不合并或编译
+./Sync-WcxLocal.ps1              更新、合并并编译
+./Sync-WcxLocal.ps1 -BuildOnly   只编译当前源码，用于修复冲突后重新构建
+./Sync-WcxLocal.ps1 -SkipBuild   更新和合并，不编译
+
+遇到冲突：
+脚本会停止并列出冲突文件，不会自动用某一方覆盖，也不会继续输出未验证的新包。
+解决冲突并 git add/git commit 后，运行 -BuildOnly。
+取消本次合并用 git merge --abort；每次需要合并前会建立 codex/wcxlc-backup-时间 分支。
+当前有未提交修改或未完成合并时，更新会停止；先保存当前工作。
+
+版本与签名：
+源项目保留自己的版本号；wcxlcVersionCode/wcxlcVersionName Gradle 属性仅用于本地构建。
+本地版本号会递增，版本名跟随基础版本，例如 v285-wcxlc-local。
+脚本沿用此前的本地签名文件，签名密钥不会加入 Git 提交或备份 bundle。
+编译成功、生成注册表至少含 37 项及两个独立恢复控制、APK 元数据与签名验证通过后才交付 APK。
+如果未来源码、构建工具或微信接口变动，可能需要手动调整和实机验证；Git 合并成功不代表所有场景自动兼容。
+
+恢复本地 Git 分支：
+本地 Git bundle 只包含本次维护提交，依赖基础提交 a0324ceaeb5bc1bd31f56371b7bc81e8dea1f740。
+在已经包含该基础提交的 wcx Git 仓库中执行：
+git fetch D:/projects/VX/output/wcx-secret-friend-maintenance.bundle refs/heads/codex/merge-secret-friend-wcxlc:refs/heads/codex/merge-secret-friend-wcxlc
+git switch codex/merge-secret-friend-wcxlc
+若在全新电脑上，先克隆 https://github.com/ymy1990/wcx.git，再导入此 bundle，并重新设置本机 SDK/JDK/签名路径。
+
+本流程仅维护本地 Git 分支及生成 APK，不推送 GitHub，不自动安装到手机。
+参考：Git merge https://git-scm.com/docs/git-merge
