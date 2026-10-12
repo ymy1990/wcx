@@ -34,8 +34,8 @@ PowerShell 用法（在工作副本中）：
 如果未来源码、构建工具或微信接口变动，可能需要手动调整和实机验证；Git 合并成功不代表所有场景自动兼容。
 
 恢复本地 Git 分支：
-本地 Git bundle 只包含本次维护提交，依赖基础提交 a0324ceaeb5bc1bd31f56371b7bc81e8dea1f740。
-在已经包含该基础提交的 wcx Git 仓库中执行：
+本地 Git bundle 保存维护分支及合并的 fork 更新，是依赖基础仓库历史的增量备份。
+请先克隆或同步你的 fork，用 git bundle verify 检查输出列出的先决提交，然后在该 Git 仓库中执行：
 git fetch D:/projects/VX/output/wcx-secret-friend-maintenance.bundle refs/heads/codex/merge-secret-friend-wcxlc:refs/heads/codex/merge-secret-friend-wcxlc
 git switch codex/merge-secret-friend-wcxlc
 若在全新电脑上，先克隆 https://github.com/ymy1990/wcx.git，再导入此 bundle，并重新设置本机 SDK/JDK/签名路径。
