@@ -29,6 +29,11 @@ object SecretFriendMigrations {
         if (!WePrefs.containsKey("密友名单管理")) {
             WePrefs.putBool("密友名单管理", Preferences.secretFriendMasterEnabled)
         }
+        // Settings rows read the stored toggle value. Persist the new default once so their
+        // initial state matches startup, while preserving an explicitly disabled setting.
+        if (!WePrefs.containsKey("密友显示状态提示")) {
+            WePrefs.putBool("密友显示状态提示", true)
+        }
         // The original category master and list master have separate controls.
         // Preserve both stored values; runtime hiding checks both without overwriting either.
     }
