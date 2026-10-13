@@ -17,6 +17,7 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 import com.Johnny.wcx.features.api.core.WeDatabaseApi;
+import com.Johnny.wcx.utils.HostInfo;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -31,7 +32,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Local APK repair: keep hidden-message indicators until the matching chat is opened. */
+/** Keep unread indicators until the matching chat opens, and show temporary visibility status. */
 public final class SecretMessageUi {
     private static final String TAG = "WCXSecretUnread";
     private static final String PREF = "secret_friend_visual_pending_v5";
@@ -50,6 +51,7 @@ public final class SecretMessageUi {
     private static long queriedAt;
     private static FrameLayout dotRoot;
     private static View dot;
+    private static int dotColor;
     private static String lastStatus = "";
     private static String lastDatabaseStatus = "";
 
@@ -79,6 +81,13 @@ public final class SecretMessageUi {
     private static void refresh() {
         MAIN.removeCallbacks(TICK);
         if (resumed) MAIN.post(TICK);
+    }
+    public static void stateChanged() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            MAIN.post(new Runnable() { public void run() { stateChanged(); } });
+            return;
+        }
+        refresh();
     }
     private static final Application.ActivityLifecycleCallbacks CALLBACKS = new Application.ActivityLifecycleCallbacks() {
         public void onActivityResumed(Activity a) {
@@ -119,11 +128,9 @@ public final class SecretMessageUi {
             return;
         }
         if (application != null) return;
-        try {
-            Application app = (Application) Class.forName("android.app.ActivityThread")
-                    .getMethod("currentApplication").invoke(null);
-            if (app != null) register(app);
-        } catch (Exception e) { Log.w(TAG, "registration deferred until home is available"); }
+        // HostInfo is initialized before features load. Register even when title gestures and
+        // unread prompts are disabled, without waiting for ActivityThread's global application.
+        register(HostInfo.INSTANCE.getApplication());
     }
     private static void register(Application app) {
         if (application != null) return;
@@ -241,6 +248,7 @@ public final class SecretMessageUi {
         if (dot != null && dot.getParent() instanceof ViewGroup) ((ViewGroup) dot.getParent()).removeView(dot);
         dot = null;
         dotRoot = null;
+        dotColor = 0;
     }
     private static boolean visible(View v, Rect bounds) {
         return v.getVisibility() == View.VISIBLE && v.isShown() && v.getGlobalVisibleRect(bounds)
@@ -271,7 +279,7 @@ public final class SecretMessageUi {
             for (int i = 0; i < group.getChildCount(); i++) collect(group.getChildAt(i), root, targets, depth + 1);
         }
     }
-    private static boolean showDot(FrameLayout root, View search) {
+    private static boolean showDot(FrameLayout root, View search, int color, String description) {
         if (search == null) { if (dot != null) dot.setVisibility(View.INVISIBLE); return false; }
         if (dotRoot != root) { detachDot(); dotRoot = root; }
         int size = Math.max(1, Math.round(Math.max(4, Math.min(12, RedDotPrompt.INSTANCE.getDotSizeDp()))
@@ -280,14 +288,17 @@ public final class SecretMessageUi {
             dot = new View(root.getContext());
             GradientDrawable background = new GradientDrawable();
             background.setShape(GradientDrawable.OVAL);
-            background.setColor(0xfffa5151);
             dot.setBackground(background);
             dot.setClickable(false);
             dot.setFocusable(false);
             dot.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-            dot.setContentDescription("未读提示");
             root.addView(dot, new FrameLayout.LayoutParams(size, size, Gravity.TOP | Gravity.LEFT));
         }
+        if (dotColor != color) {
+            ((GradientDrawable) dot.getBackground()).setColor(color);
+            dotColor = color;
+        }
+        dot.setContentDescription(description);
         int[] origin = new int[2];
         root.getLocationOnScreen(origin);
         Rect anchor = new Rect();
@@ -311,6 +322,7 @@ public final class SecretMessageUi {
         load();
         boolean boldEnabled = BottomBarBold.INSTANCE.isEnabled();
         boolean dotEnabled = RedDotPrompt.INSTANCE.isEnabled();
+        boolean shownDotEnabled = SecretFriendShownPrompt.INSTANCE.isEnabled();
         Set<String> secrets = new HashSet<String>(SecretFriendState.INSTANCE.getWxIds());
         // Removing a secret or disabling the master must not leave an orphan indicator.
         if (pending.retainAll(secrets)) save();
@@ -333,11 +345,18 @@ public final class SecretMessageUi {
             label.getPaint().setStrokeWidth(Math.max(1, Math.min(5, BottomBarBold.INSTANCE.getBoldStrength())) * 0.4f);
             label.invalidate();
         }
-        boolean dotted = active && dotEnabled && decor instanceof FrameLayout && showDot((FrameLayout) decor, targets.search);
+        // The shared overlay represents one state at a time. Switching its color never
+        // acknowledges messages: pending unread state remains until the corresponding chat opens.
+        boolean shownDot = shownDotEnabled && !hidden && !secrets.isEmpty();
+        boolean unreadDot = active && dotEnabled;
+        boolean dotted = (shownDot || unreadDot) && decor instanceof FrameLayout
+                && showDot((FrameLayout) decor, targets.search, shownDot ? 0xff07c160 : 0xfffa5151,
+                        shownDot ? "密友正在临时显示" : "密友未读提示");
         if (!dotted && dot != null) dot.setVisibility(View.INVISIBLE);
         String status = "pending=" + pending.size() + "; hidden=" + hidden + "; boldEnabled=" + boldEnabled
-                + "; dotEnabled=" + dotEnabled + "; bottomLabels=" + targets.labels.size()
-                + "; search=" + (targets.search != null) + "; bold=" + (bold && !targets.labels.isEmpty()) + "; dot=" + dotted;
+                + "; dotEnabled=" + dotEnabled + "; shownDotEnabled=" + shownDotEnabled + "; bottomLabels=" + targets.labels.size()
+                + "; search=" + (targets.search != null) + "; bold=" + (bold && !targets.labels.isEmpty()) + "; dot=" + dotted
+                + "; dotColor=" + (dotted ? (shownDot ? "green" : "red") : "none");
         if (!status.equals(lastStatus)) { lastStatus = status; Log.i(TAG, status); }
     }
 }

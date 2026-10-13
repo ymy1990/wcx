@@ -202,7 +202,10 @@ object SecretFriendState {
 
     fun isEnabledForGesture(): Boolean = getStoredWxIds().isNotEmpty()
 
-    fun clearTemporarilyShown() { WePrefs.putLong(KEY_TEMP_UNTIL, 0L) }
+    fun clearTemporarilyShown() {
+        WePrefs.putLong(KEY_TEMP_UNTIL, 0L)
+        SecretMessageUi.stateChanged()
+    }
 
     // ─────────────────────── 临时解除状态 ───────────────────────
 
@@ -226,6 +229,7 @@ object SecretFriendState {
             if (WePrefs.getLongOrDef(KEY_TEMP_UNTIL, 0L) != until) return@Runnable
             HideConversations.restoreHiddenRows()
             WeConversationApi.reloadConversations()
+            SecretMessageUi.stateChanged()
             showToastIfEnabled(context, toastTempShown)
         }
         if (Looper.myLooper() == Looper.getMainLooper()) refresh.run()
@@ -258,6 +262,7 @@ object SecretFriendState {
         WePrefs.putLong(KEY_TEMP_UNTIL, 0L)
         HideConversations.removeSecretRows()
         WeConversationApi.reloadConversations()
+        SecretMessageUi.stateChanged()
         if (previous != 0L) showToastIfEnabled(context, toastTempOff)
     }
 

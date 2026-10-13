@@ -198,6 +198,19 @@ object RedDotPrompt : SwitchFeature() {
     override fun onDisable() { WeDatabaseListenerApi.removeListener(secretMsgListener) }
 }
 
+/** Temporary visibility uses the unread dot's overlay and size, with an independent switch. */
+@Feature(
+    name = "密友显示状态提示",
+    categories = ["密友功能"],
+    description = "临时显示密友时，搜索入口旁显示绿点；恢复隐藏后消失，未读红点继续按原设置显示。大小与圆点提示共用"
+)
+object SecretFriendShownPrompt : SwitchFeature() {
+    override val defaultEnabled: Boolean = true
+    @Composable override fun Ui() = RedDotPrompt.Ui()
+    override fun onEnable() { SecretMessageUi.bootstrap(); SecretMessageUi.stateChanged() }
+    override fun onDisable() { SecretMessageUi.stateChanged() }
+}
+
 // ─────────────────────────── 22. 拦截扫码登录 ───────────────────────────
 
 /**
