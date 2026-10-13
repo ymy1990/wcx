@@ -28,6 +28,7 @@ fun ScriptsPager(
     onOpenMarket: () -> Unit = {},
     onOpenManager: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
+    onOpenFaq: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var readmePlugin by remember { mutableStateOf<ScriptPluginRuntime.ScriptPlugin?>(null) }
@@ -42,6 +43,7 @@ fun ScriptsPager(
                     onOpenReadme = { plugin -> readmePlugin = plugin },
                     onOpenMarket = onOpenMarket,
                     onOpenDiagnostics = onOpenDiagnostics,
+                    onOpenFaq = onOpenFaq,
                 )
             }
         }
