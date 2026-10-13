@@ -182,6 +182,7 @@ private sealed interface SettingsNavTarget {
     data object ScriptMarket : SettingsNavTarget
     data object ScriptManager : SettingsNavTarget
     data object ScriptDiagnostics : SettingsNavTarget
+    data object ScriptFaq : SettingsNavTarget
 }
 
 @Composable
@@ -197,6 +198,7 @@ private fun SettingsRoot(onFinish: () -> Unit) {
                 onOpenScriptMarket = { push(SettingsNavTarget.ScriptMarket) },
                 onOpenScriptManager = { push(SettingsNavTarget.ScriptManager) },
                 onOpenScriptDiagnostics = { push(SettingsNavTarget.ScriptDiagnostics) },
+                onOpenScriptFaq = { push(SettingsNavTarget.ScriptFaq) },
             )
 
             is SettingsNavTarget.Category -> CategoryDetailScreen(
@@ -217,6 +219,8 @@ private fun SettingsRoot(onFinish: () -> Unit) {
             SettingsNavTarget.ScriptManager -> ScriptManagerScreen(onBack = pop)
 
             SettingsNavTarget.ScriptDiagnostics -> ScriptDiagnosticsScreen(onBack = pop)
+
+            SettingsNavTarget.ScriptFaq -> ScriptFaqScreen(onBack = pop)
         }
     }
 }
@@ -229,6 +233,7 @@ private fun MainPagerScreen(
     onOpenScriptMarket: () -> Unit,
     onOpenScriptManager: () -> Unit,
     onOpenScriptDiagnostics: () -> Unit,
+    onOpenScriptFaq: () -> Unit,
 ) {
     val pagerState = rememberPagerState(pageCount = { 5 })
     val isDragged by pagerState.interactionSource.collectIsDraggedAsState()
@@ -258,6 +263,7 @@ private fun MainPagerScreen(
                         onOpenMarket = onOpenScriptMarket,
                         onOpenManager = onOpenScriptManager,
                         onOpenDiagnostics = onOpenScriptDiagnostics,
+                        onOpenFaq = onOpenScriptFaq,
                     )
                     3 -> LogsPager()
                     else -> SettingsPager(onOpenLicense = onOpenLicense, onOpenAcknowledgements = onOpenAcknowledgements)
