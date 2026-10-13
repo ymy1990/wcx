@@ -222,9 +222,14 @@ object SecretFriendState {
     /** A schedule's SHOW persists until its next HIDE or a manual restore. */
     fun tempShowUntil(until: Long, context: Context? = null) {
         WePrefs.putLong(KEY_TEMP_UNTIL, until)
-        showToastIfEnabled(context, toastTempShown)
-        HideConversations.restoreHiddenRows()
-        WeConversationApi.reloadConversations()
+        val refresh = Runnable {
+            if (WePrefs.getLongOrDef(KEY_TEMP_UNTIL, 0L) != until) return@Runnable
+            HideConversations.restoreHiddenRows()
+            WeConversationApi.reloadConversations()
+            showToastIfEnabled(context, toastTempShown)
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) refresh.run()
+        else mainHandler.post(refresh)
         if (until != Long.MAX_VALUE) scheduleTempExpiry(until)
     }
 

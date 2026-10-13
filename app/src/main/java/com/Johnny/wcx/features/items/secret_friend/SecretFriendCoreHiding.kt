@@ -86,7 +86,7 @@ object HideConversations : SwitchFeature(), IResolveDex,
         WeConversationApi.methodNotifyConversationChanged.hookBefore {
             val kind = args.getOrNull(0) as? Int ?: return@hookBefore
             val talker = args.getOrNull(2) as? String ?: return@hookBefore
-            if (kind == 3 && !SecretFriendState.isTemporarilyShown() && SecretFriendState.isSecret(talker)) {
+            if (_isEnabled && kind in 2..3 && !SecretFriendState.isTemporarilyShown() && SecretFriendState.isSecret(talker)) {
                 result = null
             }
         }
@@ -125,7 +125,7 @@ object HideConversations : SwitchFeature(), IResolveDex,
             ?: rewriteWrapperSql(sql, SecretFriendState.getWxIds())
     }
 
-    fun restoreHiddenRows(): Int { WeConversationApi.reloadConversations(); return 0 }
+    fun restoreHiddenRows(): Int = SecretFriendConversationRecovery.restore()
     fun removeSecretRows() { WeConversationApi.reloadConversations() }
     fun reconcileOnListChange() { WeConversationApi.reloadConversations() }
 
