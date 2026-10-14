@@ -1,5 +1,6 @@
 package com.Johnny.wcx.features.api.core
 
+import android.content.ContentValues
 import dev.ujhhgtg.reflekt.reflekt
 import dev.ujhhgtg.reflekt.utils.createInstance
 import com.Johnny.wcx.dexkit.abc.IResolveDex
@@ -147,6 +148,18 @@ object WeConversationApi : ApiFeature(), IResolveDex {
     internal fun getConversationForRecovery(talker: String): Any? {
         check(!methodGetConversationByTalker.isPlaceholder) { "Conversation getter unavailable" }
         return methodGetConversationByTalker.method.invoke(conversationStorage, talker)
+    }
+
+    /** Read-only unread state through the native storage, without a filtered list query. */
+    fun getUnreadCountForIndicator(talker: String): Long {
+        val conversation = getConversationForRecovery(talker) ?: return 0L
+        val values = conversation.javaClass.getMethod("convertTo").invoke(conversation) as ContentValues
+        fun count(column: String): Long? {
+            val key = values.keySet().firstOrNull { it.equals(column, ignoreCase = true) } ?: return null
+            return values.getAsLong(key)
+        }
+        val unread = count("unReadCount") ?: error("Native unread count unavailable")
+        return maxOf(0L, unread, count("unReadMuteCount") ?: 0L)
     }
 
     internal fun newConversationForRecovery(talker: String): Any {

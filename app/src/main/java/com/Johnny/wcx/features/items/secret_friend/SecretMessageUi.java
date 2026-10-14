@@ -3,6 +3,7 @@ package com.Johnny.wcx.features.items.secret_friend;
 import android.app.Activity;
 import android.app.Application;
 import android.content.Intent;
+import android.database.Cursor;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
@@ -17,6 +18,7 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 import com.Johnny.wcx.features.api.core.WeDatabaseApi;
+import com.Johnny.wcx.features.api.core.WeConversationApi;
 import com.Johnny.wcx.utils.HostInfo;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
@@ -24,7 +26,6 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
@@ -32,7 +33,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Keep unread indicators until the matching chat opens, and show temporary visibility status. */
+/** Reconcile unread indicators with native read state, and show temporary visibility status. */
 public final class SecretMessageUi {
     private static final String TAG = "WCXSecretUnread";
     private static final String PREF = "secret_friend_visual_pending_v5";
@@ -42,6 +43,7 @@ public final class SecretMessageUi {
     // All state below is owned by the main thread; the worker returns only immutable snapshots.
     private static final Set<String> pending = new HashSet<String>();
     private static final Map<String, Long> openedAt = new HashMap<String, Long>();
+    private static final Map<String, Long> receivedAt = new HashMap<String, Long>();
     private static final WeakHashMap<TextView, OriginalPaint> paints = new WeakHashMap<TextView, OriginalPaint>();
     private static WeakReference<Activity> home = new WeakReference<Activity>(null);
     private static Application application;
@@ -136,7 +138,7 @@ public final class SecretMessageUi {
         if (application != null) return;
         app.registerActivityLifecycleCallbacks(CALLBACKS);
         application = app;
-        Log.i(TAG, "v5 unread lifecycle registered; clear only the opened chat");
+        Log.i(TAG, "v6 unread lifecycle registered; reconcile confirmed native read state");
     }
     public static void watch(final Activity a) {
         if (!isHome(a)) return;
@@ -156,6 +158,7 @@ public final class SecretMessageUi {
                 load();
                 if (talker.equals(currentChat) || !SecretFriendState.INSTANCE.getWxIds().contains(talker)) return;
                 openedAt.remove(talker);
+                receivedAt.put(talker, SystemClock.uptimeMillis());
                 if (pending.add(talker)) {
                     save();
                     Log.i(TAG, "hidden incoming message; pending chats=" + pending.size());
@@ -173,6 +176,7 @@ public final class SecretMessageUi {
             if (talker == null || !SecretFriendState.INSTANCE.getWxIds().contains(talker)) return;
             load();
             openedAt.put(talker, SystemClock.uptimeMillis());
+            receivedAt.remove(talker);
             boolean removed = pending.remove(talker);
             if (removed) save();
             Log.i(TAG, "matching secret chat opened; cleared=" + removed + "; remaining=" + pending.size());
@@ -184,35 +188,74 @@ public final class SecretMessageUi {
         queriedAt = started;
         READER.execute(new Runnable() {
             public void run() {
-                final Set<String> unread = new HashSet<String>();
-                int rows = 0;
+                final Map<String, Long> counts = new HashMap<String, Long>();
+                int nativeReads = 0;
+                int sqlReads = 0;
+                int unread = 0;
                 boolean ready = false;
                 try {
                     ready = WeDatabaseApi.INSTANCE.isReady();
                     if (ready) for (String id : secrets) {
-                        List<Map<String, Object>> result = WeDatabaseApi.INSTANCE.executeQuery(
-                                "SELECT unReadCount FROM rconversation WHERE username = ?", new Object[] { id });
-                        if (result == null || result.isEmpty()) continue;
-                        Object value = result.get(0).get("unReadCount");
-                        if (!(value instanceof Number)) continue;
-                        rows++;
-                        if (((Number) value).longValue() > 0) unread.add(id);
+                        Long count = null;
+                        try {
+                            count = WeConversationApi.INSTANCE.getUnreadCountForIndicator(id);
+                            nativeReads++;
+                        } catch (Exception nativeUnavailable) {
+                            // Read by column position: cursor column-name casing varies across
+                            // WeChat versions. An absent/failed SQL row is unknown, never zero.
+                            try (Cursor cursor = WeDatabaseApi.INSTANCE.rawQuery(
+                                    "SELECT unReadCount, unReadMuteCount FROM rconversation WHERE username = ?",
+                                    new Object[] { id })) {
+                                if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) {
+                                    count = Math.max(0L, Math.max(cursor.getLong(0), cursor.getLong(1)));
+                                    sqlReads++;
+                                }
+                            } catch (Exception sqlUnavailable) {
+                                // Retain insert tracking until this contact can be read reliably.
+                            }
+                        }
+                        if (count != null) {
+                            counts.put(id, count);
+                            if (count > 0) unread++;
+                        }
                     }
                 } catch (RuntimeException e) { Log.w(TAG, "native unread lookup unavailable; insert tracking retained", e); }
-                final String status = "ready=" + ready + "; rows=" + rows + "; unread=" + unread.size();
+                final String status = "ready=" + ready + "; confirmed=" + counts.size() + "; native=" + nativeReads
+                        + "; sql=" + sqlReads + "; unknown=" + (secrets.size() - counts.size()) + "; unread=" + unread;
                 MAIN.post(new Runnable() {
                     public void run() {
                         READING.set(false);
                         load();
                         Set<String> active = SecretFriendState.INSTANCE.getWxIds();
                         boolean changed = false;
-                        for (String id : unread) {
+                        int added = 0;
+                        int cleared = 0;
+                        for (Map.Entry<String, Long> entry : counts.entrySet()) {
+                            String id = entry.getKey();
+                            if (!active.contains(id) || id.equals(currentChat)) continue;
                             Long opened = openedAt.get(id);
-                            // Avoid an in-flight snapshot reintroducing a chat just opened locally.
-                            if (active.contains(id) && !id.equals(currentChat)
-                                    && (opened == null || started > opened.longValue() + 3500)) changed |= pending.add(id);
+                            if (entry.getValue() > 0) {
+                                // An in-flight snapshot must not reintroduce a chat just opened.
+                                if ((opened == null || started > opened.longValue() + 3500) && pending.add(id)) {
+                                    changed = true;
+                                    added++;
+                                }
+                            } else {
+                                Long received = receivedAt.get(id);
+                                // Insert callbacks can precede the native unread update. Give it
+                                // time to commit, and reject snapshots older than that callback.
+                                if ((received == null || started > received.longValue() + 3500) && pending.remove(id)) {
+                                    changed = true;
+                                    cleared++;
+                                    receivedAt.remove(id);
+                                }
+                            }
                         }
-                        if (changed) { save(); Log.i(TAG, "native unread recovered; pending chats=" + pending.size()); }
+                        if (changed) {
+                            save();
+                            Log.i(TAG, "native unread reconciled; added=" + added + "; cleared=" + cleared
+                                    + "; pending chats=" + pending.size());
+                        }
                         if (!status.equals(lastDatabaseStatus)) {
                             lastDatabaseStatus = status;
                             Log.d(TAG, "native unread snapshot: " + status);
@@ -324,11 +367,14 @@ public final class SecretMessageUi {
         boolean dotEnabled = RedDotPrompt.INSTANCE.isEnabled();
         boolean shownDotEnabled = SecretFriendShownPrompt.INSTANCE.isEnabled();
         Set<String> secrets = new HashSet<String>(SecretFriendState.INSTANCE.getWxIds());
-        // Removing a secret or disabling the master must not leave an orphan indicator.
-        if (pending.retainAll(secrets)) save();
+        // Removing a secret prunes its state; disabling the master only suspends visuals.
+        Set<String> stored = SecretFriendState.INSTANCE.getStoredWxIds();
+        if (pending.retainAll(stored)) save();
+        openedAt.keySet().retainAll(stored);
+        receivedAt.keySet().retainAll(stored);
         if ((boldEnabled || dotEnabled) && !secrets.isEmpty()) queryUnread(secrets);
         boolean hidden = !SecretFriendState.INSTANCE.isTemporarilyShown();
-        boolean active = hidden && !pending.isEmpty();
+        boolean active = hidden && !Collections.disjoint(pending, secrets);
         Rect bounds = new Rect();
         Targets targets = new Targets();
         if (visible(decor, bounds)) collect(decor, bounds, targets, 0);
