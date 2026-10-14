@@ -150,6 +150,10 @@ object WeConversationApi : ApiFeature(), IResolveDex {
         return methodGetConversationByTalker.method.invoke(conversationStorage, talker)
     }
 
+    /** Reuse the resolved service for native conversation methods instead of scanning object graphs. */
+    fun conversationStorageForMethod(method: java.lang.reflect.Method): Any? =
+        if (method.declaringClass.isAssignableFrom(classConversationStorage.clazz)) conversationStorage else null
+
     /** Read-only unread state through the native storage, without a filtered list query. */
     fun getUnreadCountForIndicator(talker: String): Long {
         val conversation = getConversationForRecovery(talker) ?: return 0L

@@ -2,6 +2,8 @@ package h.Hchat.hooks.api.runtime;
 
 import android.database.Cursor;
 import android.content.ContentValues;
+import android.os.SystemClock;
+import com.Johnny.wcx.features.api.core.WeConversationApi;
 import android.text.TextUtils;
 
 import h.Hchat.dexkit.DexFinder;
@@ -266,22 +268,33 @@ public final class WeChatDatabaseApi {
             }
             storageObjectCache.remove(cacheKey);
         }
+        try {
+            Object known = WeConversationApi.INSTANCE.conversationStorageForMethod(method);
+            if (known != null && owner.isInstance(known)) {
+                storageObjectCache.put(cacheKey, known);
+                return known;
+            }
+        } catch (Exception unavailable) {
+            // The shared conversation service may not be resolved yet. Retry with bounded discovery.
+        }
         Object storage = getCoreStorage();
         if (storage == null) return null;
 
         Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-        ArrayDeque<Object> queue = new ArrayDeque<>();
-        queue.add(storage);
-        while (!queue.isEmpty()) {
-            Object current = queue.removeFirst();
-            if (current == null || visited.contains(current)) continue;
-            visited.add(current);
+        ArrayDeque<StorageNode> queue = new ArrayDeque<>();
+        visited.add(storage);
+        queue.add(new StorageNode(storage, 0));
+        long deadline = SystemClock.uptimeMillis() + STORAGE_SEARCH_MAX_MS;
+        while (!queue.isEmpty() && SystemClock.uptimeMillis() < deadline) {
+            StorageNode node = queue.removeFirst();
+            Object current = node.value;
             if (owner.isInstance(current)) {
                 storageObjectCache.put(cacheKey, current);
                 return current;
             }
-            enqueueNestedObjects(current, queue, visited);
+            enqueueNestedObjects(node, queue, visited, deadline);
         }
+        log("存储对象未就绪：" + owner.getName() + "，已检查 " + visited.size() + " 个候选，稍后可重试");
         return null;
     }
 
@@ -836,22 +849,31 @@ public final class WeChatDatabaseApi {
         }
     }
 
-    /** 搜索上限，避免对象图异常庞大时长时间遍历。 */
-    private static final int WRAPPER_SEARCH_LIMIT = 200_000;
+    /** Bound fallback discovery before it reaches application/VM graphs or large message caches. */
+    private static final int STORAGE_SEARCH_MAX_OBJECTS = 512;
+    private static final int STORAGE_SEARCH_MAX_DEPTH = 4;
+    private static final int STORAGE_SEARCH_MAX_CHILDREN = 128;
+    private static final long STORAGE_SEARCH_MAX_MS = 100L;
+
+    private static final class StorageNode {
+        final Object value;
+        final int depth;
+        StorageNode(Object value, int depth) { this.value = value; this.depth = depth; }
+    }
 
     private Object findDbWrapper(Object storage) {
         if (storage == null || dexFinder.sqliteDbWrapperClass == null) return null;
         Class<?> target = dexFinder.sqliteDbWrapperClass;
         Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
-        ArrayDeque<Object> queue = new ArrayDeque<>();
-        queue.add(storage);
+        ArrayDeque<StorageNode> queue = new ArrayDeque<>();
+        visited.add(storage);
+        queue.add(new StorageNode(storage, 0));
         int scanned = 0;
-        while (!queue.isEmpty()) {
-            Object current = queue.removeFirst();
-            if (current == null || visited.contains(current)) continue;
-            visited.add(current);
+        long deadline = SystemClock.uptimeMillis() + STORAGE_SEARCH_MAX_MS;
+        while (!queue.isEmpty() && SystemClock.uptimeMillis() < deadline) {
+            StorageNode node = queue.removeFirst();
+            Object current = node.value;
             scanned++;
-            if (scanned > WRAPPER_SEARCH_LIMIT) break;
 
             if (target.isInstance(current)) {
                 log("数据库 wrapper 命中: " + current.getClass().getName() + "（扫描 " + scanned + " 个对象）");
@@ -864,7 +886,7 @@ public final class WeChatDatabaseApi {
                 return current;
             }
 
-            enqueueNestedObjects(current, queue, visited);
+            enqueueNestedObjects(node, queue, visited, deadline);
         }
         // 定位失败时输出足够信息以便定位（所在 storage 类型、目标类、扫描规模）。
         log("BFS 未命中 SqliteDB wrapper：storage=" + storage.getClass().getName()
@@ -872,25 +894,32 @@ public final class WeChatDatabaseApi {
         return null;
     }
 
-    private void enqueueNestedObjects(Object source,
-                                      ArrayDeque<Object> queue,
-                                      Set<Object> visited) {
+    private void enqueueNestedObjects(StorageNode node,
+                                      ArrayDeque<StorageNode> queue,
+                                      Set<Object> visited, long deadline) {
+        if (node.depth >= STORAGE_SEARCH_MAX_DEPTH || visited.size() >= STORAGE_SEARCH_MAX_OBJECTS) return;
+        Object source = node.value;
+        int children = 0;
         // Map / 集合 / 数组：部分微信版本会把数据库/storage 对象缓存于其中，必须展开。
         try {
             if (source instanceof Map) {
                 for (Object value : ((Map<?, ?>) source).values()) {
-                    if (value != null && !visited.contains(value)) queue.addLast(value);
+                    if (++children > STORAGE_SEARCH_MAX_CHILDREN || SystemClock.uptimeMillis() >= deadline) return;
+                    enqueueStorageValue(value, node.depth + 1, queue, visited);
                 }
-            } else if (source instanceof Iterable) {
-                for (Object value : (Iterable<?>) source) {
-                    if (value != null && !visited.contains(value)) queue.addLast(value);
+            } else if (source instanceof java.util.Collection) {
+                for (Object value : (java.util.Collection<?>) source) {
+                    if (++children > STORAGE_SEARCH_MAX_CHILDREN || SystemClock.uptimeMillis() >= deadline) return;
+                    enqueueStorageValue(value, node.depth + 1, queue, visited);
                 }
-            } else if (source.getClass().isArray()) {
+            } else if (source.getClass().isArray() && !source.getClass().getComponentType().isPrimitive()) {
                 int length = java.lang.reflect.Array.getLength(source);
-                for (int i = 0; i < length; i++) {
+                for (int i = 0; i < Math.min(length, STORAGE_SEARCH_MAX_CHILDREN); i++) {
+                    if (SystemClock.uptimeMillis() >= deadline) return;
                     Object value = java.lang.reflect.Array.get(source, i);
-                    if (value != null && !visited.contains(value)) queue.addLast(value);
+                    enqueueStorageValue(value, node.depth + 1, queue, visited);
                 }
+                return;
             }
         } catch (Throwable ignored) {
         }
@@ -898,18 +927,29 @@ public final class WeChatDatabaseApi {
         Class<?> cur = source.getClass();
         while (cur != null && cur != Object.class) {
             for (Field field : fieldsOf(cur)) {
+                if (++children > STORAGE_SEARCH_MAX_CHILDREN || visited.size() >= STORAGE_SEARCH_MAX_OBJECTS
+                        || SystemClock.uptimeMillis() >= deadline) return;
                 try {
                     if (KavaReflector.isStatic(field)) continue;
                     Class<?> type = field.getType();
                     if (type == null || type.isPrimitive() || type == String.class) continue;
                     Object value = KavaReflector.readField(field, source);
-                    if (value != null && !visited.contains(value)) {
-                        queue.addLast(value);
-                    }
+                    enqueueStorageValue(value, node.depth + 1, queue, visited);
                 } catch (Throwable ignored) {}
             }
             cur = cur.getSuperclass();
         }
+    }
+
+    private void enqueueStorageValue(Object value, int depth, ArrayDeque<StorageNode> queue, Set<Object> visited) {
+        if (value == null || visited.size() >= STORAGE_SEARCH_MAX_OBJECTS
+                || value instanceof CharSequence || value instanceof Number || value instanceof Boolean
+                || value instanceof Character || value instanceof Enum || value instanceof Class
+                || value instanceof ClassLoader || value instanceof Thread || value instanceof android.content.Context
+                || value instanceof android.view.View) return;
+        if (value.getClass().isArray() && value.getClass().getComponentType().isPrimitive()) return;
+        // Mark at enqueue time, so shared references cannot multiply the pending queue.
+        if (visited.add(value)) queue.addLast(new StorageNode(value, depth));
     }
 
     private Method findQueryMethod(Class<?> wrapperClass) {
