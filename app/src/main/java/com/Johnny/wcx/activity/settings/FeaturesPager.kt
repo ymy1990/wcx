@@ -24,6 +24,7 @@ import com.Johnny.wcx.features.core.FeaturesProvider
 import com.Johnny.wcx.features.core.SwitchFeature
 import com.Johnny.wcx.features.items.easter_egg.AprilFools
 import com.Johnny.wcx.features.items.easter_egg.isAprilFools
+import com.Johnny.wcx.features.items.secret_friend.SecretFriendState
 import com.Johnny.wcx.preferences.WePrefs
 import com.Johnny.wcx.utils.android.showToastSuspend
 import kotlinx.coroutines.CoroutineScope
@@ -193,7 +194,11 @@ fun FeaturesPager(onOpenCategory: (String) -> Unit) {
 // ---------------------------------------------------------------------------
 
 @Composable
-fun CategoryDetailScreen(categoryName: String, onBack: () -> Unit) {
+fun CategoryDetailScreen(
+    categoryName: String,
+    onBack: () -> Unit,
+    onOpenSecretFriendDiagnostics: () -> Unit,
+) {
     val items = remember(categoryName) {
         FeaturesProvider.ALL_HOOK_ITEMS.filter { categoryName in it.categories }
     }
@@ -211,12 +216,9 @@ fun CategoryDetailScreen(categoryName: String, onBack: () -> Unit) {
     // 总开关：切换后立即对该分类下所有开关生效（各功能自身开关状态保留）。
     fun applyMasterSwitch(next: Boolean) {
         masterEnabled = next
-        Preferences.secretFriendMasterEnabled = next
-        items.filterIsInstance<SwitchFeature>().forEach { feature ->
-            feature.isEnabled = next && WePrefs.getBoolOrFalse(feature.name)
-        }
+        SecretFriendState.applyMasterSwitch(next)
         switchStates.keys.forEach { key ->
-            switchStates[key] = next && WePrefs.getBoolOrFalse(key)
+            switchStates[key] = WePrefs.getBoolOrFalse(key)
         }
     }
 
@@ -262,6 +264,22 @@ fun CategoryDetailScreen(categoryName: String, onBack: () -> Unit) {
                         }
                         Switch(checked = masterEnabled, onCheckedChange = ::applyMasterSwitch)
                     }
+                }
+            }
+        }
+
+        if (isSecretFriendCategory) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .padding(top = 8.dp)
+                        .fillMaxWidth(),
+                ) {
+                    ArrowPreference(
+                        title = "密友功能诊断",
+                        startAction = {},
+                        onClick = { onOpenSecretFriendDiagnostics() },
+                    )
                 }
             }
         }

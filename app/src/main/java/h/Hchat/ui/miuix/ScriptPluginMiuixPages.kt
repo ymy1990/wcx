@@ -763,14 +763,26 @@ fun ScriptPluginSettingsContent(
                         showSettings = ScriptPluginRuntime.canOpenSettings(plugin),
                         onOpenReadme = { onOpenReadme(plugin) },
                         onOpenSettings = {
-                            val result = ScriptPluginRuntime.callOpenSettings(plugin.id)
-                            if (result.isFailure) {
-                                Toast.makeText(
-                                    context,
-                                    result.exceptionOrNull()?.message ?: "打开设置失败",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
+                            // 开关是开的、但本次启动未加载成功时，plugins 里没有它 → 先补加载再打开，
+                            // 避免「开关明明开着却提示插件未开启」。放到后台线程，避免 eval 阻塞 UI。
+                            Thread({
+                                var result = ScriptPluginRuntime.callOpenSettings(plugin.id)
+                                if (result.isFailure && ScriptPluginRuntime.isPluginEnabled(context, plugin.id)) {
+                                    runCatching { ScriptPluginRuntime.reloadPlugin(context, plugin.id) }
+                                    result = ScriptPluginRuntime.callOpenSettings(plugin.id)
+                                }
+                                val finalResult = result
+                                val enabled = ScriptPluginRuntime.isPluginEnabled(context, plugin.id)
+                                Handler(Looper.getMainLooper()).post {
+                                    if (finalResult.isFailure) {
+                                        val msg = finalResult.exceptionOrNull()?.message.orEmpty()
+                                        val text = if (msg.contains("插件未开启") && enabled) {
+                                            "插件尚未加载成功（微信数据库/预热可能未就绪），请稍后重试，或到「脚本功能诊断」点一键修复"
+                                        } else msg.ifBlank { "打开设置失败" }
+                                        Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            }, "WCX-Script-OpenSettings").start()
                         },
                         onOpenManager = { actionPlugin = plugin },
                         onCheckedChange = { next ->

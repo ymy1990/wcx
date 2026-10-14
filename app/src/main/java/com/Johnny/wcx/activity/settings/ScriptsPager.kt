@@ -33,7 +33,7 @@ fun ScriptsPager(
     val context = LocalContext.current
     var readmePlugin by remember { mutableStateOf<ScriptPluginRuntime.ScriptPlugin?>(null) }
 
-    MiuixListScaffold(title = "脚本", blurTopBar = false) {
+    MiuixListScaffold(title = "脚本", blurTopBar = false, horizontalPadding = 0.dp) {
         item {
             // 父级 Pager 与内层 TopAppBar 各有一层 backdrop；内容滚动越界会被采样成顶部灰块，这里裁剪掉溢出绘制。
             Box(modifier = Modifier.fillMaxWidth().clipToBounds()) {

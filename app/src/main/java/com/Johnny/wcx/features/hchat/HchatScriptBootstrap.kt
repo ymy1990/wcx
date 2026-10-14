@@ -1,5 +1,7 @@
 package com.Johnny.wcx.features.hchat
 
+import android.os.Handler
+import android.os.Looper
 import com.Johnny.wcx.utils.HostInfo
 import com.Johnny.wcx.utils.WeLogger
 import com.Johnny.wcx.utils.reflection.ClassLoaders
@@ -9,6 +11,8 @@ import h.Hchat.event.EventBus
 import h.Hchat.hooks.api.core.WechatApiFeature
 import h.Hchat.hooks.core.DexInstallScheduler
 import h.Hchat.hooks.core.FeatureContext
+import h.Hchat.hooks.items.fakevoiceduration.FakeVoiceDurationFeature
+import h.Hchat.hooks.items.protobuf.ProtobufPacketFeature
 import h.Hchat.hooks.items.script.ScriptPluginFeature
 import h.Hchat.hooks.items.script.ScriptPluginRuntime
 import h.Hchat.preferences.ConfigStore
@@ -64,12 +68,55 @@ object HchatScriptBootstrap {
             " / mmKernel=" + (dex.mmKernelClass?.name ?: "null")
     }
 
-    /** 诊断页用：重置引导状态并重新安装。 */
+    /** 诊断页用：重置引导状态并重新安装（含把所有 Hook 安装任务重排、强制推进到 WARMUP）。 */
     @Synchronized
     fun retry() {
         installed = false
         status = "重新初始化中"
         install()
+        // 重新初始化后：
+        // 一、强制把就绪阶段推进到 WARMUP —— 否则若 wechat_api:warmup 任务没跑成，
+        //     脚本的菜单 / 消息 / 发送按钮等 WARMUP 级 Hook 永远不会被尝试；
+        // 二、把**所有**未安装任务（含仍在重试与已暂停的）计数清零并立即重排。
+        runCatching { DexInstallScheduler.ensureWarmupReady() }
+            .onFailure { WeLogger.e(TAG, "ensureWarmupReady 失败", it) }
+        runCatching { DexInstallScheduler.retryAllPending() }
+            .onFailure { WeLogger.e(TAG, "retryAllPending 失败", it) }
+    }
+
+    /**
+     * 彻底重新初始化：重建整个引导链路，再强制推进就绪阶段、重排所有 Hook 安装任务。
+     * 返回逐步执行日志（供诊断页展示）。
+     */
+    @Synchronized
+    fun reinitializeFully(): List<String> {
+        val log = mutableListOf<String>()
+        installed = false
+        status = "彻底重新初始化中"
+
+        runCatching { install() }.fold(
+            onSuccess = {
+                log += "已重建引导链路（DexKitBridge + WechatApiFeature + ScriptPluginFeature）"
+                log += "引导状态：" + status
+            },
+            onFailure = { log += "重建引导链路异常：" + (it.message ?: it.javaClass.simpleName) },
+        )
+
+        runCatching { DexInstallScheduler.ensureWarmupReady() }.fold(
+            onSuccess = { log += "已强制推进就绪阶段到 " + DexInstallScheduler.readyLevelName() },
+            onFailure = { log += "推进就绪阶段失败：" + (it.message ?: it.javaClass.simpleName) },
+        )
+
+        runCatching { DexInstallScheduler.retryAllPending() }.fold(
+            onSuccess = {
+                val tasks = DexInstallScheduler.snapshot()
+                log += "已重排全部 Hook 安装任务（共 " + tasks.size + " 个，待装 " +
+                        DexInstallScheduler.pendingCount() + " 个）"
+            },
+            onFailure = { log += "重排 Hook 任务失败：" + (it.message ?: it.javaClass.simpleName) },
+        )
+
+        return log
     }
 
     @Synchronized
@@ -128,10 +175,34 @@ object HchatScriptBootstrap {
                 WeLogger.e(TAG, "ScriptPluginFeature 安装失败", it)
             }
 
+            // 追加安装「脚本插件 API」依赖的 Feature。与 Hchat 的 FeatureManager.installAll 一致：
+            // 先 onInit（注册设置入口），仅当启用时才 install。
+            // - ProtobufPacketFeature：脚本 sendPacket / 数据包监听；
+            // - FakeVoiceDurationFeature：伪造语音时长（未在设置中开启时，其 hook 内部自动跳过）。
+            listOf(ProtobufPacketFeature(), FakeVoiceDurationFeature()).forEach { extra ->
+                val extraName = runCatching { extra.name() }.getOrDefault(extra.javaClass.simpleName)
+                runCatching {
+                    extra.onInit(context)
+                    if (extra.isEnabled(context)) {
+                        extra.install(context)
+                        status += " / $extraName 安装成功"
+                    } else {
+                        status += " / $extraName 未启用"
+                    }
+                }.onFailure {
+                    status += " / $extraName 安装失败：" + (it.message ?: it.javaClass.simpleName)
+                    WeLogger.e(TAG, "$extraName 安装失败", it)
+                }
+            }
+
             // 关键：推进调度器到 BRIDGE 阶段，触发 WechatApiFeature 注册的 warmup 任务
             // （resolveAll + 数据库 API 解析），数据库才会就绪。无论前面是否局部失败都要执行。
             runCatching { DexInstallScheduler.markDexBridgeReady() }
                 .onFailure { WeLogger.e(TAG, "markDexBridgeReady 失败", it) }
+
+            // 冷启动时 DexKit 预热可能较慢、或 warmup 任务偶发没跑成，导致阶段卡在 BRIDGE、
+            // 脚本页显示未就绪而需要用户手动修复。这里起一个轻量自愈看门狗。
+            scheduleReadyWatchdog()
 
             WeLogger.i(TAG, "Hchat 脚本子系统已安装（WechatApiFeature + ScriptPluginFeature + markDexBridgeReady）")
 
@@ -156,5 +227,29 @@ object HchatScriptBootstrap {
             status = "引导异常：" + (it.message ?: it.javaClass.simpleName)
             WeLogger.e(TAG, "Hchat 脚本子系统安装失败", it)
         }
+    }
+
+    /**
+     * 冷启动自愈看门狗：定时重排未装 Hook 任务；若多轮仍未推进到 WARMUP，则强制推进。
+     * 目的：让「强停后/更新后重启」不再需要用户手动去脚本诊断里点修复。
+     */
+    private fun scheduleReadyWatchdog() {
+        val handler = Handler(Looper.getMainLooper())
+        var attempts = 0
+        val task = object : Runnable {
+            override fun run() {
+                attempts++
+                val level = runCatching { DexInstallScheduler.readyLevelName() }.getOrDefault("")
+                if (level.contains("WARMUP")) return
+                runCatching { DexInstallScheduler.retryAllPending() }
+                    .onFailure { WeLogger.e(TAG, "看门狗重排失败", it) }
+                if (attempts >= 3) {
+                    runCatching { DexInstallScheduler.ensureWarmupReady() }
+                        .onFailure { WeLogger.e(TAG, "看门狗强制推进失败", it) }
+                }
+                if (attempts < 8) handler.postDelayed(this, 5_000L)
+            }
+        }
+        handler.postDelayed(task, 5_000L)
     }
 }

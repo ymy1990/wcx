@@ -1,4 +1,4 @@
-本地密友版持续更新（2026-10-12）
+本地密友版持续更新（2026-10-14）
 
 维护分支：codex/merge-secret-friend-wcxlc
 工作副本：C:/Users/Yu/.codex/worktrees/merge-secret-friend-wcxlc/VX
@@ -25,12 +25,13 @@ PowerShell 用法（在工作副本中）：
 解决冲突并 git add/git commit 后，运行 -BuildOnly。
 取消本次合并用 git merge --abort；每次需要合并前会建立 codex/wcxlc-backup-时间 分支。
 当前有未提交修改或未完成合并时，更新会停止；先保存当前工作。
+重新 fork 或重新同步导致 master 回退时，脚本仅刷新本地远程跟踪引用；维护分支的密友改动保留，继续通过正常合并更新。
 
 版本与签名：
 源项目保留自己的版本号；wcxlcVersionCode/wcxlcVersionName Gradle 属性仅用于本地构建。
 本地版本号会递增，版本名跟随基础版本，例如 v285-wcxlc-local。
 脚本沿用此前的本地签名文件，签名密钥不会加入 Git 提交或备份 bundle。
-编译成功、生成注册表至少含 36 项及两个独立恢复控制、APK 元数据与签名验证通过后才交付 APK。
+编译成功、生成注册表至少含 38 项密友入口及两个独立恢复控制、绿色状态提示、密友诊断，APK 元数据与签名验证通过后才交付 APK。
 如果未来源码、构建工具或微信接口变动，可能需要手动调整和实机验证；Git 合并成功不代表所有场景自动兼容。
 
 恢复本地 Git 分支：

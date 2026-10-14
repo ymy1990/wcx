@@ -11,11 +11,7 @@ import com.Johnny.wcx.utils.WeLogger
 import com.Johnny.wcx.utils.android.showToast
 
 /**
- * 密友名单管理 = 密友功能**主控开关** + 名单编辑入口。
- *
- * - 开关关闭（主控关）：所有依赖名单的密友隐藏/拦截功能立即失效（名单视为空），
- *   被删除的会话行恢复显示；**名单本身保留**，重新打开无需重新勾选。
- * - 开关打开（主控开）：按存储名单 + 各功能自身开关恢复生效。
+ * 密友名单编辑入口；总开关统一使用「密友功能」分类页顶部的开关。
  *
  * 名单数据读写走 [SecretFriendState]（getStoredWxIds/setWxIds 不受主控影响），
  * 各隐藏功能消费 [SecretFriendState.getWxIds]（主控关闭时返回空 → 整体放行）。
@@ -23,7 +19,7 @@ import com.Johnny.wcx.utils.android.showToast
 @Feature(
     name = "密友名单管理",
     categories = ["密友功能"],
-    description = "密友功能总开关 + 名单编辑：关闭时密友功能整体失效并恢复显示（名单保留，重开即恢复）；开启时按名单生效"
+    description = "编辑密友名单；总开关位于密友功能分类页顶部，关闭总开关时名单仍保留"
 )
 object SecretFriendManager : ClickableFeature() {
 
@@ -31,6 +27,13 @@ object SecretFriendManager : ClickableFeature() {
 
     /** 默认开启：从未操作过该开关的用户，密友功能照常按各自开关工作。 */
     override val defaultEnabled: Boolean = true
+
+    /**
+     * 本行不显示开关：密友功能的唯一总开关是「密友功能」分类页顶部的总开关
+     * （[com.Johnny.wcx.constants.Preferences.secretFriendMasterEnabled]）。
+     * 本行只作为「编辑密友名单」入口，避免出现两个互相矛盾的总开关。
+     */
+    override val noSwitchWidget: Boolean = true
 
     override fun onClick(context: ComponentActivity) = openSelector(context)
 

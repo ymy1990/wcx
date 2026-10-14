@@ -121,6 +121,9 @@
 -keep class bsh.** { *; }
 # 脚本 API 前置代码（ScriptPluginRuntime 内以字符串 eval）按名导入的类
 -keep class org.luckypray.dexkit.DexKitBridge { *; }
+-keep class me.hd.wauxv.** { *; }
+# 脚本 ABI 强引用锚点：以真实类型引用这些只被脚本按类名引用的类，避免 R8 裁剪/改名
+-keep class h.Hchat.hooks.items.script.ScriptPluginAbi { *; }
 -keep class me.hd.wauxv.plugin.api.callback.** { *; }
 -keep class me.hd.wauxv.data.bean.** { *; }
 -keep class me.hd.wauxv.data.bean.info.** { *; }

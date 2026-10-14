@@ -34,7 +34,9 @@ if (-not $BuildOnly) {
         throw 'Save current local changes as a commit before updating. The script does not discard edits.'
     }
     Write-Host 'Fetching updates from your fork...'
-    Invoke-LocalGit @('fetch', '--no-tags', $ForkUrl, "${ForkBranch}:${remoteRef}")
+    # A recreated/resynchronized fork may rewind master. Refresh only the tracking ref;
+    # the maintenance branch is still preserved and updated by a normal merge below.
+    Invoke-LocalGit @('fetch', '--no-tags', $ForkUrl, "+${ForkBranch}:${remoteRef}")
     $behind = (Invoke-LocalGit @('rev-list', '--count', "HEAD..${remoteRef}")).Trim()
     Write-Host "Fork commits not yet incorporated: $behind"
     if ($CheckOnly) { return }
@@ -107,7 +109,7 @@ try {
     $registryPath = Join-Path $repo 'app/build/generated/ksp/standardDebug/kotlin/com/Johnny/wcx/features/core/FeaturesProvider.kt'
     $registry = Get-Content -LiteralPath $registryPath -Raw
     $controls = [regex]::Matches($registry, '\w+\.apply \{ name = "[^"]+"; categories = listOf\("密友功能"\)')
-    if ($controls.Count -lt 37 -or $registry -notmatch 'AutoRestoreOnAppLeave\.apply' -or $registry -notmatch 'AutoRestoreOnLeave\.apply' -or $registry -notmatch 'SecretFriendShownPrompt\.apply') {
+    if ($controls.Count -lt 38 -or $registry -notmatch 'AutoRestoreOnAppLeave\.apply' -or $registry -notmatch 'AutoRestoreOnLeave\.apply' -or $registry -notmatch 'SecretFriendShownPrompt\.apply' -or $registry -notmatch 'SecretFriendDiagnostics\.apply') {
         throw 'The generated feature registry is missing expected secret-friend controls.'
     }
     $apk = Join-Path $apkDirectory $entry[0].outputFile

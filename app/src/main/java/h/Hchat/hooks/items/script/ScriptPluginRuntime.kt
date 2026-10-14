@@ -1714,6 +1714,10 @@ object ScriptPluginRuntime {
             set("httpClient", waBridge)
             set("__hchat_runtime", ScriptPluginRuntime)
             set("__hchat_interpreter", this)
+            // 保持脚本 ABI 类可达：这些类只被脚本按类名引用（BeanShell），
+            // R8 静态分析看不到，必须以真实引用锚定，否则 release 下报
+            // 「Class: PluginCallBack.HttpCallback not found in namespace」。
+            set("__script_abi_classes", ScriptPluginAbi.anchor())
             set("apis", currentBridge.apis)
             set("dexKit", currentBridge.dexKit)
             set("dexKitBridge", currentBridge.dexKit?.bridge())
