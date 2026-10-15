@@ -37,19 +37,16 @@ import com.Johnny.wcx.dexkit.abc.IResolveDex
 import com.Johnny.wcx.dexkit.dsl.dexMethod
 import com.Johnny.wcx.features.api.core.WeConversationApi
 import com.Johnny.wcx.features.api.core.WeDatabaseApi
-import com.Johnny.wcx.features.api.core.WeDatabaseListenerApi
 import com.Johnny.wcx.features.api.ui.WeChatInputBarApi
 import com.Johnny.wcx.features.api.ui.WeMainActivityBeautifyApi
 import com.Johnny.wcx.features.core.ClickableFeature
 import com.Johnny.wcx.features.core.Feature
 
 import com.Johnny.wcx.features.items.contacts.hidecontacts.installListHooks
-import com.Johnny.wcx.features.items.contacts.hidecontacts.installMomentsHooks
 import com.Johnny.wcx.features.items.contacts.hidecontacts.installSchedules
 import com.Johnny.wcx.features.items.contacts.hidecontacts.installSearchHooks
 import com.Johnny.wcx.features.items.contacts.hidecontacts.installSqlHooks
 import com.Johnny.wcx.features.items.contacts.hidecontacts.installVoipHooks
-import com.Johnny.wcx.features.items.contacts.hidecontacts.rewriteMomentsFeedSql
 import com.Johnny.wcx.features.items.contacts.hidecontacts.showSchedulesDialog
 import com.Johnny.wcx.features.items.contacts.hidecontacts.uninstallSchedules
 import com.Johnny.wcx.preferences.WePrefs
@@ -80,8 +77,7 @@ import java.lang.reflect.Modifier as JavaModifier
     categories = ["联系人与群组"],
     description = "与密友名单共用，提供拍一拍、角标计数及其他列表隐藏；通话拒接与定时规则在密友功能内独立设置"
 )
-object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputBarListener,
-    WeDatabaseListenerApi.IQueryListener {
+object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputBarListener {
 
     private const val TAG = "HideContacts"
 
@@ -276,17 +272,12 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
 
         // Independent secret-call support owns the VoIP hooks.
 
-        // --- moments inline likes/comments (mutual-friend posts) ---
-
-        installMomentsHooks()
+        // Moments posts and interactions belong exclusively to their independent secret-friend
+        // switches. Installing legacy filters here would bypass both settings.
 
         // --- command ---
 
         WeChatInputBarApi.addListener(this)
-
-        // --- moments feed ---
-
-        WeDatabaseListenerApi.addListener(this)
 
         // --- notification ---
         //
@@ -313,7 +304,6 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
         chattingUi?.clear()
         chattingUi = null
         WeChatInputBarApi.removeListener(this)
-        WeDatabaseListenerApi.removeListener(this)
         temporarilyShown = false
         WeConversationApi.reloadConversations()
     }
@@ -358,11 +348,6 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
                 SecretFriendState.tempOff(chatFooter.context)
             }
         }
-    }
-
-    override fun onQuery(sql: String): String? {
-        if (isTemporarilyShown) return null
-        return rewriteMomentsFeedSql(sql, hiddenContacts)
     }
 
     // The parentRef marker older versions wrote via WeConversationApi.setConversationsVisibility to
@@ -700,43 +685,6 @@ object HideContacts : ClickableFeature(), IResolveDex, WeChatInputBarApi.IInputB
     internal val methodPatMsgInsert by dexMethod(allowFailure = true) {
         matcher {
             usingEqStrings("MicroMsg.PatMsgExtension", "insert pat msg %d %s %s")
-        }
-    }
-
-    /**
-     * `fb4.z0.D0(SnsInfo, SnsObject, Context, rs, boolean, d8, String, Map, Map, List)` —
-     * `SnsUtil.snsInfoToSnsStruct`. Turns a post's raw `SnsObject` (attrBuf) into the UI-facing
-     * struct for every Moments renderer. See hidecontacts/HideContactsMoments.kt for why this is
-     * the right chokepoint for a hidden contact's inline likes/comments on someone else's post.
-     */
-    internal val methodSnsInfoToSnsStruct by dexMethod {
-        matcher {
-            usingEqStrings("snsInfoToSnsStruct", "com.tencent.mm.plugin.sns.data.SnsUtil", "mSnsInfo is null, why?")
-        }
-    }
-
-    /**
-     * `static void c3.H(c3 netSceneSnsSync, SnsObject snsObject)` (8.0.76; the same method is
-     * `c3.I` on 8.0.69) — `NetSceneSnsSync`'s inlined `updateSyncDataCache`, the single writer of
-     * the 发现 tab's "N 位朋友的新动态" state. See hidecontacts/HideContactsMoments.kt.
-     *
-     * Matched on the `SnsMethodCalculate.markStartTimeMs/markEndTimeMs` pair alone, deliberately.
-     * The obvious extra anchors ("preRdUsername" / "isCoverPreRd" /
-     * "updateSyncDataCache build previousRedDotInfo error") belong to a `previousRedDotInfo`
-     * telemetry block that only exists from 8.0.76 onwards — including them would make this
-     * delegate resolve to 0 hits on 8.0.65–8.0.75, and since it has no `allowFailure` that failure
-     * marks the *whole* HideContacts feature as Failed, so `FeaturesLoader` would skip `startup()`
-     * and every other hidden-contact surface would silently stop working.
-     *
-     * The narrower pair is still unambiguous: `"updateSyncDataCache"` occurs nowhere in the app
-     * except inside this one method (8.0.76 `c3.java:106`/`:141`, 8.0.69 `c3.java:103`/`:111`), and
-     * every user of it necessarily also carries the class-name constant from the same call. The
-     * method shape — `static void (c3, SnsObject)` — is identical on both trees, so the hook body
-     * needs no per-version branching.
-     */
-    internal val methodSnsSyncUpdateRedDotCache by dexMethod {
-        matcher {
-            usingEqStrings("updateSyncDataCache", "com.tencent.mm.plugin.sns.model.NetSceneSnsSync")
         }
     }
 

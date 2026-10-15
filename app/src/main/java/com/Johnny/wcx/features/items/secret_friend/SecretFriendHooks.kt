@@ -105,11 +105,10 @@ internal fun entryMentionsSecret(entry: Any, secrets: Set<String>): Boolean {
 }
 
 /**
- * 朋友圈内联点赞/评论过滤（备份版 HideSecretFriendMoments 的 snsInfoToSnsStruct 段，独立成
- * 共用安装器：HideMoments 与 HideMomentsInteraction 各自注册，同开时第二次命中已是
- * 过滤后的克隆体，幂等无副作用）。
+ * 仅由「朋友圈互动隐藏」安装的内联点赞/评论过滤。
+ * 在克隆体上过滤，关闭开关或临时显示后重新渲染仍可读取原始互动。
  */
-internal fun BaseFeature.installSnsInlineSecretFilter(methodSnsInfoToSnsStruct: DexMethodDelegate) {
+internal fun HideMomentsInteraction.installSnsInlineSecretFilter(methodSnsInfoToSnsStruct: DexMethodDelegate) {
     if (methodSnsInfoToSnsStruct.isPlaceholder) {
         WeLogger.w(TAG, "snsInfoToSnsStruct wasn't resolved; moments inline likes/comments stay visible")
         return
@@ -151,9 +150,9 @@ internal fun BaseFeature.installSnsInlineSecretFilter(methodSnsInfoToSnsStruct: 
     }
 
     methodSnsInfoToSnsStruct.hookBefore {
+        if (!isEnabled || !isActive || SecretFriendState.isTemporarilyShown()) return@hookBefore
         val secrets = SecretFriendState.getWxIds()
-        // 空名单 / 临时显示态快速路径, 跳过全部反射
-        if (secrets.isEmpty() || SecretFriendState.isTemporarilyShown()) return@hookBefore
+        if (secrets.isEmpty()) return@hookBefore
 
         val original = args.getOrNull(1) as? com.tencent.mm.protocal.protobuf.SnsObject ?: return@hookBefore
 

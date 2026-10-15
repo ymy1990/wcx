@@ -8,29 +8,32 @@ import com.Johnny.wcx.dexkit.dsl.dexMethod
 import com.Johnny.wcx.features.api.core.WeDatabaseListenerApi
 import com.Johnny.wcx.features.core.Feature
 import com.Johnny.wcx.features.core.SwitchFeature
+import com.Johnny.wcx.features.items.contacts.hidecontacts.injectCondition
+import com.Johnny.wcx.features.items.contacts.hidecontacts.toSqlList
 import com.Johnny.wcx.utils.WeLogger
 import com.Johnny.wcx.utils.reflection.BString
+import java.lang.reflect.Modifier as JavaModifier
 
 /**
- * 朋友圈组 6 / 8 / 9：朋友圈隐藏（feed 注入 + 红点 + 内联）、朋友圈互动隐藏、分组图标隐藏。
+ * 朋友圈组 6 / 8 / 9：帖子与新动态红点隐藏、朋友圈互动隐藏、分组图标隐藏。
  *
- * 6/8 与「隐藏联系人」的朋友圈过滤同一组已验证拦截点，判定换密友名单（备份版
- * HideSecretFriendMoments 语义）；所有 hook 过滤前先查临时显示态。
+ * 帖子与互动各自拥有过滤入口；「隐藏联系人」、会话隐藏和搜索隐藏不再过滤朋友圈。
+ * 所有过滤入口同时检查自己的运行状态、密友总开关与临时显示态。
  */
 
 // ─────────────────────────── 6. 朋友圈隐藏 ───────────────────────────
 
 /**
- * 朋友圈隐藏（MaskWechat SNS 语义 → 备份版 HideSecretFriendMoments 全量语义）：
+ * 朋友圈帖子隐藏：
  * - 时间线主信息流：SnsInfo feed 查询注入 `SnsInfo.userName NOT IN (...)`（含
- *   EnhanceQuery (1=1) 标记两种形态；与「隐藏联系人」同开时合并进已有子句，两份名单都过滤）；
+ *   EnhanceQuery (1=1) 标记两种形态）；
  * - 发现 tab「N 位朋友的新动态」红点：NetSceneSnsSync.updateSyncDataCache 命中密友即取消；
- * - 密友的点赞/评论内联：见 [installSnsInlineSecretFilter]（SnsObject 克隆后过滤）。
+ * 点赞、评论和互动消息由 [HideMomentsInteraction] 独立控制。
  */
 @Feature(
     name = "朋友圈隐藏",
     categories = ["密友功能"],
-    description = "时间线不再出现密友的帖子，密友的点赞/评论在共同好友帖子下也不显示，发现页红点不计密友新动态"
+    description = "时间线不再出现密友的帖子，发现页红点不计密友新动态；点赞和评论由「朋友圈互动隐藏」单独控制"
 )
 object HideMoments : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryListener {
 
@@ -50,19 +53,10 @@ object HideMoments : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryL
         }
     }
 
-    /** `fb4.z0.D0(SnsInfo, SnsObject, ...)` — SnsUtil.snsInfoToSnsStruct（朋友圈渲染的单一咽喉点）。 */
-    private val methodSnsInfoToSnsStruct by dexMethod(allowFailure = true) {
-        matcher {
-            usingEqStrings("snsInfoToSnsStruct", "com.tencent.mm.plugin.sns.data.SnsUtil", "mSnsInfo is null, why?")
-        }
-    }
-
     override fun onEnable() {
-        WeDatabaseListenerApi.addListener(this)
-
         if (!methodSnsSyncUpdateRedDotCache.isPlaceholder) {
             methodSnsSyncUpdateRedDotCache.hookBefore {
-                if (SecretFriendState.isTemporarilyShown()) return@hookBefore
+                if (!isEnabled || !isActive || SecretFriendState.isTemporarilyShown()) return@hookBefore
                 // 静态两参方法: args[0] 是 NetSceneSnsSync 实例, args[1] 是 SnsObject;
                 // Username 是未混淆的 protobuf 字段。
                 val snsObject = args.getOrNull(1) as? SnsObject ?: return@hookBefore
@@ -75,7 +69,7 @@ object HideMoments : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryL
             WeLogger.w(TAG, "updateSyncDataCache 未解析, 发现页红点不过滤")
         }
 
-        installSnsInlineSecretFilter(methodSnsInfoToSnsStruct)
+        WeDatabaseListenerApi.addListener(this)
     }
 
     override fun onDisable() {
@@ -84,21 +78,20 @@ object HideMoments : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryL
     }
 
     /**
-     * 时间线主信息流：与 rewriteMomentsFeedSql 同款注入（密友名单）。
-     * 与「隐藏联系人」同开时对方可能已注入自己的 NOT IN 子句——此时把密友名单**合并**进
-     * 已有子句（而非跳过），两份名单都会被过滤；个人主页 (userName=) 跳过。
+     * 时间线主信息流按密友名单过滤；已有 NOT IN 子句时合并名单，个人主页 (userName=) 跳过。
      */
     override fun onQuery(sql: String): String? {
+        if (!isEnabled || !isActive) return null
+        if (!sql.contains("from SnsInfo", ignoreCase = true)) return null
+        if (sql.contains("SnsInfo.userName=", ignoreCase = false)) return null
         if (SecretFriendState.isTemporarilyShown()) return null
         val secrets = SecretFriendState.getWxIds()
         if (secrets.isEmpty()) return null
-        if (!sql.contains("from SnsInfo", ignoreCase = true)) return null
-        if (sql.contains("SnsInfo.userName=", ignoreCase = false)) return null
 
         val list = secrets.joinToString(",") { "'${it.replace("'", "''")}'" }
         val filter = " AND SnsInfo.userName NOT IN ($list) "
 
-        // 已有注入（隐藏联系人或自己早前的重写）：把名单合并进该子句
+        // 已有注入：把名单合并进该子句。
         val injected = Regex("SnsInfo\\.userName\\s+not\\s+in\\s*\\(([^)]*)\\)", RegexOption.IGNORE_CASE).find(sql)
         if (injected != null) {
             val merged = injected.groupValues[1].split(',')
@@ -122,27 +115,67 @@ object HideMoments : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryL
 // ─────────────────────────── 8. 朋友圈互动隐藏 ───────────────────────────
 
 /**
- * 朋友圈互动隐藏（备份版内联过滤独立开关）：密友在别人帖子下的点赞/评论不再显示。
- * 与「朋友圈隐藏」同开时，后者已把条目滤掉，本开关的 hook 命中后幂等无副作用。
+ * 朋友圈互动隐藏：内联点赞/评论与 SnsComment 互动消息列表共用此独立开关，
+ * 不依赖帖子隐藏、会话隐藏或旧「隐藏联系人」是否开启。
  */
 @Feature(
     name = "朋友圈互动隐藏",
     categories = ["密友功能"],
-    description = "独立开关：密友的点赞/评论在共同好友的帖子下不显示（与朋友圈隐藏可叠加，重复开启无副作用）"
+    description = "隐藏密友的朋友圈点赞、评论及互动消息；与「朋友圈隐藏」独立控制"
 )
-object HideMomentsInteraction : SwitchFeature(), IResolveDex {
+object HideMomentsInteraction : SwitchFeature(), IResolveDex, WeDatabaseListenerApi.IQueryListener {
 
     private const val TAG = "HideMomentsInteraction"
 
-    /** 同 HideMoments：SnsUtil.snsInfoToSnsStruct 渲染咽喉点。 */
+    /** SnsUtil.snsInfoToSnsStruct：仅在此开关开启时过滤内联点赞/评论。 */
     private val methodSnsInfoToSnsStruct by dexMethod(allowFailure = true) {
         matcher {
             usingEqStrings("snsInfoToSnsStruct", "com.tencent.mm.plugin.sns.data.SnsUtil", "mSnsInfo is null, why?")
         }
     }
 
+    // The native wrapper also serves queries that bypass WeDatabaseListenerApi. This feature
+    // must own that hook itself so interaction hiding works independently of conversation hiding.
+    private val methodSqliteWrapperRawQuery by dexMethod(allowFailure = true) {
+        matcher {
+            modifiers = JavaModifier.PUBLIC
+            usingEqStrings("sql is null ", "DB IS CLOSED ! {%s}")
+            paramTypes("java.lang.String", "java.lang.String[]", "int")
+            returnType("android.database.Cursor")
+        }
+    }
+
     override fun onEnable() {
+        if (!methodSqliteWrapperRawQuery.isPlaceholder) {
+            methodSqliteWrapperRawQuery.hookBefore {
+                val sql = args.firstOrNull() as? String ?: return@hookBefore
+                args[0] = onQuery(sql) ?: return@hookBefore
+            }
+        } else {
+            WeLogger.w(TAG, "SQLite wrapper 未解析，互动消息仅通过数据库查询监听过滤")
+        }
         installSnsInlineSecretFilter(methodSnsInfoToSnsStruct)
+        WeDatabaseListenerApi.addListener(this)
+    }
+
+    override fun onDisable() {
+        WeDatabaseListenerApi.removeListener(this)
+    }
+
+    override fun onQuery(sql: String): String? {
+        if (!isEnabled || !isActive) return null
+        val lower = sql.lowercase()
+        // Only SELECTs: never modify deletion or persistence of WeChat's interaction records.
+        if (!lower.trimStart().startsWith("select") || !lower.contains("from snscomment")) return null
+        if (SecretFriendState.isTemporarilyShown()) return null
+        val secrets = SecretFriendState.getWxIds()
+        if (secrets.isEmpty()) return null
+        val condition = "talker NOT IN (${secrets.toSqlList()})"
+        // A query may pass through both the wrapper and the database listener.
+        if (sql.contains(condition, ignoreCase = true)) return null
+        val statement = sql.trimEnd()
+        val terminator = if (statement.endsWith(';')) ";" else ""
+        return injectCondition(statement.removeSuffix(";"), condition) + terminator
     }
 }
 

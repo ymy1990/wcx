@@ -20,7 +20,8 @@ private const val TAG = "HideContacts.Sql"
  * Two paths bypass the wrapper and are handled separately:
  * - FTS (global search) issues its reads via `com.tencent.wcdb.database.SQLiteDatabase
  *   .rawQueryWithFactory` — see [installFtsHook].
- * - The Moments feed goes through `WeDatabaseListenerApi`, which calls [rewriteMomentsFeedSql].
+ * - Moments posts and interactions are handled by their independent secret-friend features,
+ *   never by these shared rules (also used by conversation hiding and homepage search).
  *
  * Bind arguments are always passed separately from the SQL text, so injecting literal
  * `NOT IN ('...')` predicates is safe everywhere here.
@@ -73,16 +74,6 @@ private val WRAPPER_RULES = listOf(
     // per-contact shortcut-badge join in one rule.
     SqlRule("unread-count", ::looksLikeUnreadCountQuery) {
         "rconversation.username NOT IN (${it.toSqlList()})"
-    },
-    // 朋友圈 -> 消息列表: likes and comments a hidden contact left, on our posts or on mutual
-    // friends'. `talker` is the actor. The count(*) variants must be rewritten too or the 发现-tab
-    // red dot and the list's paging counters go out of sync with the rows actually returned.
-    //
-    // NB: SnsComment DELETEs run through a different (exec) entry point and contain no "select", so
-    // they can never match here — narrowing this rule would otherwise risk silently skipping the
-    // deletion of a hidden contact's comments.
-    SqlRule("moments-comments", { it.contains("from snscomment") }) {
-        "talker NOT IN (${it.toSqlList()})"
     },
     // 通讯录 -> 群聊 的底部「N 个群聊」计数 (ContactCountView with contactType == 2). The statement is
     // built inline in `ui/contact/f1.run()` (8.0.76 `f1.java:28`, 8.0.69 `e1.java:28`).
@@ -377,35 +368,3 @@ private fun rewriteChatroomMembersSql(sql: String, hidden: Set<String>): String?
 /** Wraps a finished FTS query in a filtering outer SELECT on one of its projected columns. */
 private fun wrapWithNotIn(sql: String, column: String, hidden: Set<String>): String =
     "SELECT * FROM (${sql.removeSuffix(";")}) AS a WHERE $column NOT IN (${hidden.toSqlList()});"
-
-// ── moments feed ─────────────────────────────────────────────────────────────────────────────
-
-// 在朋友圈信息流中隐藏被隐藏联系人发布的朋友圈; EnhanceQuery 会把信息流标记替换为 (1=1)
-private const val FEED_MARKER_RAW = "(sourceType & 2 != 0 )"
-private const val FEED_MARKER_ENHANCED = "(1=1)"
-
-/** Called from `HideContacts.onQuery`; returns null to leave the query untouched. */
-internal fun rewriteMomentsFeedSql(sql: String, hidden: Set<String>): String? {
-    if (hidden.isEmpty()) return null
-
-    // 只处理主信息流查询: 排除个人主页 (userName=) 与已注入的查询
-    if (!sql.contains("from SnsInfo", false)) return null
-    if (sql.contains("SnsInfo.userName=", false)) return null
-    if (sql.contains("SnsInfo.userName not in", true)) return null
-
-    val filter = " AND SnsInfo.userName NOT IN (${hidden.toSqlList()}) "
-
-    val rewritten = when {
-        sql.contains(FEED_MARKER_RAW) ->
-            sql.replaceFirst(FEED_MARKER_RAW, FEED_MARKER_RAW + filter)
-
-        // EnhanceQuery 先执行时, 信息流标记已变为 (1=1); 个人主页不会出现该精确形式
-        sql.contains(FEED_MARKER_ENHANCED) ->
-            sql.replaceFirst(FEED_MARKER_ENHANCED, FEED_MARKER_ENHANCED + filter)
-
-        else -> return null
-    }
-
-    WeLogger.i(TAG, "hid ${hidden.size} contacts from moments feed")
-    return rewritten
-}
