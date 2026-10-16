@@ -43,6 +43,7 @@ import com.Johnny.wcx.features.items.secret_friend.SecretFriendDiagnostics
 import com.Johnny.wcx.features.items.secret_friend.SecretFriendState
 import com.Johnny.wcx.preferences.WePrefs
 import com.Johnny.wcx.utils.android.showToast
+import com.Johnny.wcx.BuildConfig
 import com.Johnny.wcx.utils.reflection.ClassLoaders
 import h.Hchat.hooks.api.core.WeChatApis
 import h.Hchat.hooks.core.DexInstallScheduler
@@ -85,6 +86,7 @@ fun ModuleHealthScreen(onBack: () -> Unit) {
 
     var items by remember { mutableStateOf(listOf<HealthItem>()) }
     var lastScan by remember { mutableStateOf("尚未检测") }
+    var scanDurationMs by remember { mutableStateOf(0L) }
     var running by remember { mutableStateOf(false) }
     var runTitle by remember { mutableStateOf("") }
     var runProgress by remember { mutableFloatStateOf(0f) }
@@ -108,6 +110,7 @@ fun ModuleHealthScreen(onBack: () -> Unit) {
             runLog = emptyList()
         }
         scope.launch {
+            val startedAt = System.currentTimeMillis()
             val steps = runCatching { stepsProvider() }.getOrElse { emptyList() }
             val collected = mutableListOf<HealthItem>()
             steps.forEachIndexed { index, step ->
@@ -135,15 +138,40 @@ fun ModuleHealthScreen(onBack: () -> Unit) {
             if (replaceItems) items = collected
             running = false
             lastScan = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+            if (replaceItems) scanDurationMs = System.currentTimeMillis() - startedAt
             if (reportTitle != null) showReportDialog(context, reportTitle, collected)
             // 运行结束（running 已置 false）后再执行收尾动作，如「修复后重新自检刷新列表」。
             afterRun?.invoke()
         }
     }
 
-    fun rescan() = launchRun("模块自检", { moduleHealthSteps(context) }, showOverlay = false, reportTitle = null, replaceItems = true)
+    fun rescan() = launchRun("模块自检", { moduleHealthSteps(context) }, showOverlay = true, reportTitle = null, replaceItems = true)
 
     LaunchedEffect(Unit) { rescan() }
+
+    fun showFilteredList(title: String, list: List<HealthItem>) {
+        if (list.isEmpty()) {
+            showToast("没有符合条件的项")
+            return
+        }
+        val text = buildString {
+            append("共 ").append(list.size).append(" 项：\n\n")
+            list.forEach { append(if (it.ok) "✅ " else "❌ ").append(it.label)
+                .append("\t").append(it.value).append("\n") }
+        }
+        AlertDialog.Builder(context)
+            .setTitle(title)
+            .setMessage(text)
+            .setNeutralButton("复制") { _, _ ->
+                runCatching {
+                    val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                    cb?.setPrimaryClip(ClipData.newPlainText(title, text))
+                }
+                showToast("已复制")
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
 
     fun openDetail(item: HealthItem) {
         val detailText = "状态：" + item.value + "\n\n" + item.detail
@@ -196,6 +224,39 @@ fun ModuleHealthScreen(onBack: () -> Unit) {
                     )
                 }
 
+                item {
+                    OverviewHealthCard(
+                        total = items.size,
+                        pass = items.count { it.ok },
+                        fail = items.size - items.count { it.ok },
+                        moduleVersion = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                        wechatVersion = runCatching {
+                            WeChatApis.version()?.current()?.displayVersion() ?: "未识别"
+                        }.getOrDefault("未识别"),
+                        internalVersion = "${BuildConfig.VERSION_CODE}",
+                        lastScan = lastScan,
+                        scanDurationMs = scanDurationMs,
+                        onShowList = { kind ->
+                            when (kind) {
+                                "pass" -> showFilteredList("通过项", items.filter { it.ok })
+                                "fail" -> showFilteredList("异常项", items.filter { !it.ok })
+                                else -> showFilteredList("全部检测项", items)
+                            }
+                        },
+                        onRescan = { rescan() },
+                        onRepair = {
+                            launchRun(
+                                "一键修复",
+                                { moduleRepairSteps(context) },
+                                showOverlay = true,
+                                reportTitle = "一键修复结果",
+                                replaceItems = false,
+                                afterRun = { rescan() },
+                            )
+                        },
+                    )
+                }
+
                 val grouped = items.groupBy { it.section }
                 grouped.forEach { (section, list) ->
                     item { SmallTitle(modifier = Modifier.padding(top = 6.dp), text = section) }
@@ -235,6 +296,7 @@ fun ModuleHealthScreen(onBack: () -> Unit) {
                     }
                 }
 
+                item { DiagnosticLogCard(context) }
                 item {
                     Text(
                         text = "说明：本页是「全量自检」——覆盖微信公共 API、脚本运行时、Hook 安装任务、关键类锚点、密友状态与各分类启用情况。" +
@@ -303,6 +365,180 @@ fun ModuleHealthScreen(onBack: () -> Unit) {
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * 模块自检顶部"DEX 适配"风格总览卡片（自画）：
+ *   大标题 + 状态主标题 + 元信息三行 + 蓝色分隔线 + 4 格统计 + 提示语 + 主/次按钮。
+ *   数据来源是当前 [items]，随自检/修复结果实时刷新；按总览模板风格化（参考截图）。
+ */
+@Composable
+private fun OverviewHealthCard(
+    total: Int,
+    pass: Int,
+    fail: Int,
+    moduleVersion: String,
+    wechatVersion: String,
+    internalVersion: String,
+    lastScan: String,
+    scanDurationMs: Long = 0L,
+    onShowList: (String) -> Unit = {},
+    onRescan: () -> Unit,
+    onRepair: () -> Unit,
+) {
+    val accent = Color(0xFF2E7DFF) // DEX 适配风品牌蓝
+    val cardBg = MiuixTheme.colorScheme.surface
+    val chipBg = Color(0xFFF1F5F9)
+    val muted = Color(0xFF6B7280)
+    val title = Color(0xFF1F2937)
+    val allOk = fail == 0 && total > 0
+    val statusTitle = if (total == 0) "尚未检测" else if (allOk) "适配检查完成" else "存在缺失项"
+    val statusColor = if (total == 0) muted else if (allOk) Color(0xFF1F2937) else Color(0xFFD93025)
+    val todo = 0
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(cardBg),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 20.dp)) {
+            // 顶部小标题
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "模块自检",
+                    fontSize = 14.sp,
+                    color = muted,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "DEX 适配",
+                    fontSize = 12.sp,
+                    color = accent,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            // 状态主标题
+            Text(
+                text = statusTitle,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = statusColor,
+            )
+            Spacer(Modifier.height(6.dp))
+            // 状态行
+            Text(
+                text = if (total == 0) {
+                    "尚未扫描，点击下方按钮立即开始。"
+                } else if (allOk) {
+                    "已检查 $total / $total 项，本轮全部通过。"
+                } else {
+                    "已检查 $total / $total 项，通过 $pass，异常 $fail。"
+                },
+                fontSize = 14.sp,
+                color = muted,
+            )
+            Spacer(Modifier.height(10.dp))
+            // 元信息 3 行
+            Text(text = "模块版本：$moduleVersion", fontSize = 13.sp, color = muted)
+            Text(text = "当前微信：$wechatVersion", fontSize = 13.sp, color = muted)
+            Text(text = "内部版本：$internalVersion", fontSize = 13.sp, color = muted)
+            // 蓝色分隔线
+            Spacer(Modifier.height(16.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp)
+                    .background(accent),
+            )
+            Spacer(Modifier.height(16.dp))
+            // 4 格统计网格
+            Row(modifier = Modifier.fillMaxWidth()) {
+                StatCell("耗时", formatDuration(scanDurationMs), chipBg, title, muted, Modifier.weight(1f).padding(end = 6.dp))
+                StatCell("通过", pass.toString(), chipBg, title, muted, Modifier.weight(1f).padding(horizontal = 3.dp), onClick = { onShowList("pass") })
+                StatCell("异常", fail.toString(), chipBg, title, muted, Modifier.weight(1f).padding(horizontal = 3.dp), onClick = { onShowList("fail") })
+                StatCell("待验证", todo.toString(), chipBg, title, muted, Modifier.weight(1f).padding(start = 6.dp), onClick = { onShowList("all") })
+            }
+            Spacer(Modifier.height(12.dp))
+            // 提示语
+            Text(
+                text = "通过表示公共能力可用，不等于所有使用场景已验证。",
+                fontSize = 13.sp,
+                color = muted,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(16.dp))
+            // 主按钮：立即重新自检
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(accent)
+                    .clickable { onRescan() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "立即重新自检",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            // 次按钮：一键修复（描边式）
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(cardBg)
+                    .clickable { onRepair() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "一键修复（重建引导链路）",
+                    fontSize = 13.sp,
+                    color = accent,
+                )
+            }
+        }
+    }
+}
+
+/** 把毫秒格式化为「1.2s」/「350ms」。 */
+private fun formatDuration(ms: Long): String = when {
+    ms <= 0L -> "—"
+    ms < 1000L -> "${ms}ms"
+    else -> String.format(Locale.getDefault(), "%.1fs", ms / 1000.0)
+}
+
+/** 4 格统计网格中每个格子的内部渲染。 */
+@Composable
+private fun StatCell(
+    label: String,
+    value: String,
+    bg: Color,
+    valueColor: Color,
+    labelColor: Color,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+) {
+    Box(
+        modifier = modifier
+            .height(64.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(bg)
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(text = value, fontSize = 20.sp, fontWeight = FontWeight.Bold, color = valueColor)
+            Spacer(Modifier.height(2.dp))
+            Text(text = label, fontSize = 13.sp, color = labelColor)
+        }
+    }
+}
+
 //  数据模型
 // ---------------------------------------------------------------------------
 
@@ -408,7 +644,14 @@ private fun featureOverview(): List<HealthItem> {
         .forEach { (category, list) ->
             val on = list.count { WePrefs.getBoolOrFalse(it.name) }
             val detail = buildString {
-                append("该分类共 ${list.size} 个功能，当前已启用 $on 个。")
+                append("该分类共 ${list.size} 个功能，当前已启用 $on 个。\n\n")
+                list.forEach { item ->
+                    val enabled = WePrefs.getBoolOrFalse(item.name)
+                    append(if (enabled) "✅ " else "⬜ ")
+                        .append(item.name)
+                        .append(if (enabled) "" else "（未启用）")
+                        .append("\n")
+                }
                 if (on == 0) append("\n该分类目前没有任何功能被启用——若你期望其中某功能生效，请到「功能」页对应分类手动开启。")
             }
             out += HealthItem("分类·$category", "功能清单与分类启用概况", "${list.size} 个，已启用 $on", true, detail)
